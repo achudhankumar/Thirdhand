@@ -1,0 +1,18 @@
+services:
+  thirdhand:
+    build: .
+    env_file: .env
+    environment:
+      INBOX_PATH: /app/data/inbox.sqlite3
+    ports:
+      - "8000:8000"
+    volumes:
+      - inbox-data:/app/data
+    shm_size: "1gb"
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 270s
+    security_opt:
+      - no-new-privileges:true
+volumes:
+  inbox-data:

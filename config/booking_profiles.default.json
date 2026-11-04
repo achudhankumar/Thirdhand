@@ -1,0 +1,81 @@
+[
+  {
+    "merchant": "Kamala Cinemas, Chennai",
+    "kind": "movie",
+    "hosts": [
+      "kamalacinemas.com",
+      "in.bookmyshow.com"
+    ],
+    "start_url": "https://in.bookmyshow.com/chennai/cinemas/kamala-cinemas-vadapalani/KAMC",
+    "steps": [
+      {
+        "action": "fill",
+        "selector": "#movie",
+        "slot": "movie"
+      },
+      {
+        "action": "select",
+        "selector": "#seats",
+        "slot": "seat_count"
+      },
+      {
+        "action": "click",
+        "selector": "#continue"
+      }
+    ],
+    "checkout_selector": "#checkout",
+    "checkout_path_prefix": "/checkout"
+  },
+  {
+    "merchant": "Sona Mina Theatre, Trichy",
+    "kind": "movie",
+    "hosts": [
+      "in.bookmyshow.com"
+    ],
+    "start_url": "https://in.bookmyshow.com/trichy/cinemas/sona-mina-cinema/SMTR",
+    "steps": [
+      {
+        "action": "fill",
+        "selector": "#movie",
+        "slot": "movie"
+      },
+      {
+        "action": "select",
+        "selector": "#seats",
+        "slot": "seat_count"
+      },
+      {
+        "action": "click",
+        "selector": "#continue"
+      }
+    ],
+    "checkout_selector": "#checkout",
+    "checkout_path_prefix": "/checkout"
+  },
+  {
+    "merchant": "Zomato",
+    "kind": "food",
+    "hosts": [
+      "www.zomato.com"
+    ],
+    "start_url": "https://www.zomato.com/trichy",
+    "steps": [
+      {
+        "action": "fill",
+        "selector": "#dish",
+        "slot": "items"
+      },
+      {
+        "action": "select",
+        "selector": "#qty",
+        "slot": "quantity"
+      },
+      {
+        "action": "click",
+        "selector": "#checkout-btn"
+      }
+    ],
+    "checkout_selector": "#checkout",
+    "checkout_path_prefix": "/checkout"
+  }
+]
