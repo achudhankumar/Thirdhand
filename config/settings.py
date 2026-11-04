@@ -27,8 +27,13 @@ class Settings(BaseSettings):
         hide_input_in_errors=True,
     )
 
-    astra_db_api_endpoint: HttpUrl
-    astra_db_application_token: SecretStr
+    environment: Literal["production", "development"] = "production"
+    enable_simulator: bool = False
+    simulator_token: SecretStr = SecretStr("")
+    simulator_path: str = "data/simulator/sessions.json"
+    local_memory_path: str = "data/local_sessions.json"
+    astra_db_api_endpoint: HttpUrl | None = None
+    astra_db_application_token: SecretStr = SecretStr("")
     astra_db_keyspace: str = Field(
         default="default_keyspace", pattern=r"^[A-Za-z][A-Za-z0-9_]{0,47}$"
     )
@@ -57,7 +62,10 @@ class Settings(BaseSettings):
     verify_token: SecretStr = SecretStr("")
     meta_app_secret: SecretStr = SecretStr("")
     app_secret: SecretStr = SecretStr("")
-    meta_api_version: str = Field(default="v20.0", pattern=r"^v[0-9]+\.[0-9]+$")
+    meta_api_version: str = Field(default="", pattern=r"^(?:v[0-9]+\.[0-9]+)?$")
+
+    provider_registry: str = ""
+    enable_open_meteo: bool = False
 
     rapidapi_key: SecretStr = SecretStr("")
     rapidapi_rail_host: str = "irctc1.p.rapidapi.com"
@@ -77,6 +85,8 @@ class Settings(BaseSettings):
     browser_channel: Literal["chromium", "chrome", "msedge"] = "chromium"
     inbox_path: str = "data/inbox.sqlite3"
     inbox_max_pending: int = Field(default=1000, ge=1)
+    job_lease_seconds: int = Field(default=300, ge=10, le=3600)
+    processing_timeout_seconds: int = Field(default=240, ge=1, le=600)
     webhook_max_bytes: int = Field(default=1048576, ge=1024)
     booking_profiles_path: str = "config/booking_profiles.json"
     browser_timeout_ms: int = Field(default=30000, ge=1000, le=120000)
@@ -88,25 +98,35 @@ class Settings(BaseSettings):
             return values
         if not values.get("meta_access_token") and values.get("whatsapp_token"):
             values["meta_access_token"] = values["whatsapp_token"]
-        if not values.get("meta_phone_number_id") and values.get("whatsapp_phone_number_id"):
+        if not values.get("meta_phone_number_id") and values.get(
+            "whatsapp_phone_number_id"
+        ):
             values["meta_phone_number_id"] = values["whatsapp_phone_number_id"]
         if not values.get("meta_verify_token") and values.get("verify_token"):
             values["meta_verify_token"] = values["verify_token"]
         if not values.get("meta_app_secret") and values.get("app_secret"):
             values["meta_app_secret"] = values["app_secret"]
-        if not values.get("google_places_api_key") and values.get("google_maps_api_key"):
+        if not values.get("google_places_api_key") and values.get(
+            "google_maps_api_key"
+        ):
             values["google_places_api_key"] = values["google_maps_api_key"]
-        if not values.get("google_routes_api_key") and values.get("google_maps_api_key"):
+        if not values.get("google_routes_api_key") and values.get(
+            "google_maps_api_key"
+        ):
             values["google_routes_api_key"] = values["google_maps_api_key"]
         if not values.get("rapidapi_rail_host") and values.get("rapidapi_host"):
             values["rapidapi_rail_host"] = values["rapidapi_host"]
-        if values.get("astra_db_collection_name") and not values.get("astra_db_collection"):
+        if values.get("astra_db_collection_name") and not values.get(
+            "astra_db_collection"
+        ):
             values["astra_db_collection"] = values["astra_db_collection_name"]
         return values
 
     @field_validator("astra_db_api_endpoint")
     @classmethod
-    def validate_endpoint(cls, value: HttpUrl) -> HttpUrl:
+    def validate_endpoint(cls, value: HttpUrl | None) -> HttpUrl | None:
+        if value is None:
+            return None
         parsed = urlsplit(str(value))
         if parsed.scheme != "https" or not (parsed.hostname or "").endswith(
             ".apps.astra.datastax.com"
@@ -121,8 +141,6 @@ class Settings(BaseSettings):
     @field_validator("astra_db_application_token")
     @classmethod
     def validate_token(cls, value: SecretStr) -> SecretStr:
-        if not value.get_secret_value().strip():
-            raise ValueError("An Astra application token is required")
         return value
 
     @field_validator("session_hash_key")
@@ -132,46 +150,70 @@ class Settings(BaseSettings):
             raise ValueError("SESSION_HASH_KEY must contain at least 32 bytes")
         return value
 
+    @model_validator(mode="after")
+    def validate_storage(self) -> "Settings":
+        if not self.use_local_memory_fallback:
+            if self.astra_db_api_endpoint is None:
+                raise ValueError("ASTRA_DB_API_ENDPOINT is required for Astra storage")
+            if not self.astra_db_application_token.get_secret_value().strip():
+                raise ValueError("An Astra application token is required")
+        if self.environment == "production":
+            if (
+                self.demo_fallback
+                or self.use_local_memory_fallback
+                or self.enable_simulator
+            ):
+                raise ValueError(
+                    "Demo, local memory and simulator require development mode"
+                )
+            if self.session_hash_key.get_secret_value().startswith(
+                "thirdhand_default_"
+            ):
+                raise ValueError("Generate a private SESSION_HASH_KEY")
+        if (
+            self.enable_simulator
+            and len(self.simulator_token.get_secret_value().encode()) < 32
+        ):
+            raise ValueError("SIMULATOR_TOKEN must contain at least 32 bytes")
+        if self.processing_timeout_seconds >= self.job_lease_seconds:
+            raise ValueError("Job lease must exceed the processing timeout")
+        return self
+
+    def validate_startup(self) -> None:
+        """No inferred demo mode, default credentials or silent SDK substitutes."""
+        self.validate_storage()
+        for field in ("meta_access_token", "meta_verify_token", "meta_app_secret"):
+            value = getattr(self, field).get_secret_value().strip()
+            if (not value and self.environment == "production") or value in {
+                "demo-whatsapp-token",
+                "thirdhand_verify_2026",
+                "demo-app-secret",
+                "local-fallback-token",
+                "changeme",
+                "change-me",
+            }:
+                raise ValueError(f"Required credential missing or unsafe: {field}")
+        if self.environment == "development":
+            return
+        if (
+            not self.meta_phone_number_id.isascii()
+            or not self.meta_phone_number_id.isdigit()
+        ):
+            raise ValueError("META_PHONE_NUMBER_ID must be numeric")
+        if not self.meta_api_version:
+            raise ValueError(
+                "Set META_API_VERSION to an explicitly verified supported version"
+            )
+        if not (
+            self.openai_api_key.get_secret_value().strip()
+            or self.gemini_api_key.get_secret_value().strip()
+        ):
+            raise ValueError(
+                "Required credential missing: openai_api_key or gemini_api_key"
+            )
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    """Validate settings once on application startup, or build safe local defaults when running in demo mode."""
-    try:
-        return Settings()
-    except Exception:
-        if os.getenv("THIRDHAND_STRICT_STARTUP", "").lower() in {"1", "true", "yes"}:
-            raise
-        return Settings(
-            _env_file=".env" if os.path.exists(".env") else None,
-            astra_db_api_endpoint=os.getenv(
-                "ASTRA_DB_API_ENDPOINT",
-                "https://local-fallback.apps.astra.datastax.com",
-            ),
-            astra_db_application_token=os.getenv(
-                "ASTRA_DB_APPLICATION_TOKEN", "local-fallback-token"
-            ),
-            session_hash_key=os.getenv(
-                "SESSION_HASH_KEY",
-                "thirdhand_default_session_secret_key_change_in_prod_2026",
-            ),
-            openai_api_key=os.getenv("OPENAI_API_KEY", ""),
-            gemini_api_key=os.getenv("GEMINI_API_KEY", ""),
-            meta_access_token=os.getenv(
-                "META_ACCESS_TOKEN", os.getenv("WHATSAPP_TOKEN", "demo-whatsapp-token")
-            ),
-            meta_phone_number_id=os.getenv(
-                "META_PHONE_NUMBER_ID",
-                os.getenv("WHATSAPP_PHONE_NUMBER_ID", "100000000000001"),
-            ),
-            meta_verify_token=os.getenv(
-                "META_VERIFY_TOKEN",
-                os.getenv("VERIFY_TOKEN", "thirdhand_verify_2026"),
-            ),
-            meta_app_secret=os.getenv(
-                "META_APP_SECRET", os.getenv("APP_SECRET", "demo-app-secret")
-            ),
-            demo_fallback=True,
-            use_local_memory_fallback=not bool(
-                os.getenv("ASTRA_DB_API_ENDPOINT", "").strip()
-            ),
-        )
+    """Load explicit configuration once. Invalid configuration always fails closed."""
+    return Settings(_env_file=os.getenv("THIRDHAND_ENV_FILE", ".env"))

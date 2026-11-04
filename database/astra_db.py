@@ -9,36 +9,13 @@ import time
 from collections.abc import Callable
 from typing import Any, Literal
 
-try:
-    from astrapy import DataAPIClient
-    from astrapy.exceptions import DataAPIErrorDescriptor, DataAPIResponseException
-    from astrapy.info import CollectionDefinition
-except ImportError:
-    class DataAPIErrorDescriptor:
-        def __init__(self, data: dict) -> None:
-            self.error_code = data.get("errorCode", "")
+from astrapy import DataAPIClient
+from astrapy.exceptions import DataAPIErrorDescriptor, DataAPIResponseException
+from astrapy.info import CollectionDefinition
 
-    class DataAPIResponseException(RuntimeError):
-        def __init__(self, msg: str, command=None, raw_response=None, error_descriptors=None, warning_descriptors=None) -> None:
-            super().__init__(msg)
-            self.error_descriptors = error_descriptors or []
-
-    class CollectionDefinition:
-        def __init__(self, **kwargs) -> None:
-            self.kwargs = kwargs
-
-    class _DummyAsyncDB:
-        async def create_collection(self, *args, **kwargs):
-            raise RuntimeError("astrapy not installed; use LocalFileCollection")
-
-    class DataAPIClient:
-        def __init__(self, token: str) -> None:
-            self.token = token
-        def get_async_database(self, endpoint: str, keyspace: str = "default_keyspace"):
-            return _DummyAsyncDB()
 from config import BaseModel, ConfigDict, Field, JsonValue, model_validator
-
 from config.settings import Settings
+from services.jobs import assert_active
 
 logger = logging.getLogger(__name__)
 
@@ -144,13 +121,16 @@ class AstraMemory:
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self._client = DataAPIClient(
-            settings.astra_db_application_token.get_secret_value()
-        )
-        self._database = self._client.get_async_database(
-            str(settings.astra_db_api_endpoint).rstrip("/"),
-            keyspace=settings.astra_db_keyspace,
-        )
+        self._client = None
+        self._database = None
+        if not settings.use_local_memory_fallback:
+            self._client = DataAPIClient(
+                settings.astra_db_application_token.get_secret_value()
+            )
+            self._database = self._client.get_async_database(
+                str(settings.astra_db_api_endpoint).rstrip("/"),
+                keyspace=settings.astra_db_keyspace,
+            )
         self._collection: Any = None
         self._initialize_lock = asyncio.Lock()
 
@@ -159,9 +139,9 @@ class AstraMemory:
         async with self._initialize_lock:
             if self._collection is not None:
                 return
-            if getattr(self.settings, 'use_local_memory_fallback', False):
-                self._collection = LocalFileCollection()
-                logger.info('Using local file session storage fallback')
+            if getattr(self.settings, "use_local_memory_fallback", False):
+                self._collection = LocalFileCollection(self.settings.local_memory_path)
+                logger.info("Using local file session storage fallback")
                 return
             try:
                 async with asyncio.timeout(self.settings.database_timeout_seconds):
@@ -191,6 +171,7 @@ class AstraMemory:
         ).hexdigest()
 
     async def _call(self, method: str, *args: Any, **kwargs: Any) -> Any:
+        await assert_active()
         if self._collection is None:
             raise MemoryUnavailable("Call initialize before accessing memory")
         try:
@@ -355,10 +336,7 @@ class AstraMemory:
             logger.error("Astra deletion rejected")
             raise MemoryUnavailable("Unable to delete session") from exc
 
-
-    async def update_profile(
-        self, user_id: str, profile: dict[str, Any]
-    ) -> Session:
+    async def update_profile(self, user_id: str, profile: dict[str, Any]) -> Session:
         def change(session: Session) -> None:
             session.profile = dict(profile)
 
@@ -382,83 +360,168 @@ class AstraMemory:
 
         return await self._mutate(user_id, change)
 
+    async def clear_location(self, user_id: str) -> Session:
+        def change(session: Session):
+            session.location = None
+
+        return await self._mutate(user_id, change)
+
+    async def change_profile(self, user_id: str, change_profile) -> Session:
+        def change(session: Session):
+            change_profile(session.profile)
+
+        return await self._mutate(user_id, change)
 
 
 class LocalFileCollection:
-    """Thread-safe local JSON collection fallback when Astra DB credentials are not yet configured."""
+    """Compatible local API backed by SQLite; import legacy JSON exactly once.
+
+    The legacy JSON is preserved for recovery. SQLite supplies atomic writes,
+    cross-instance CAS and explicit handle closure; corrupt legacy data fails closed.
+    This storage is allowed only in explicitly selected development mode.
+    """
 
     def __init__(self, path: str = "data/local_sessions.json") -> None:
-        from pathlib import Path
         import json
+        from pathlib import Path
+
+        from database.inbox import Inbox
 
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._lock = asyncio.Lock()
-        self.documents: dict[str, dict] = {}
-        if self.path.exists():
-            try:
-                self.documents = json.loads(self.path.read_text(encoding="utf-8"))
-            except Exception:
-                self.documents = {}
-
-    def _persist(self) -> None:
-        import json
-
-        self.path.write_text(
-            json.dumps(self.documents, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        self.storage = Inbox(str(self.path) + ".sqlite3")
+        with self.storage._connection() as db:
+            db.execute("PRAGMA journal_mode=WAL")
+            db.execute("BEGIN IMMEDIATE")
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS documents (id TEXT PRIMARY KEY,payload TEXT NOT NULL)"
+            )
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS metadata (name TEXT PRIMARY KEY,value TEXT NOT NULL)"
+            )
+            if not db.execute(
+                "SELECT 1 FROM metadata WHERE name='legacy_import'"
+            ).fetchone():
+                documents = {}
+                if self.path.exists():
+                    try:
+                        if self.path.stat().st_size > 10485760:
+                            raise ValueError("Legacy file exceeds import limit")
+                        documents = json.loads(self.path.read_text(encoding="utf-8"))
+                        if not isinstance(documents, dict) or any(
+                            not isinstance(k, str) or not isinstance(v, dict)
+                            for k, v in documents.items()
+                        ):
+                            raise ValueError("Invalid legacy collection")
+                    except (ValueError, OSError) as exc:
+                        raise MemoryUnavailable(
+                            "Legacy session file needs repair; original retained"
+                        ) from exc
+                db.executemany(
+                    "INSERT INTO documents(id,payload) VALUES(?,?)",
+                    [(k, json.dumps(v)) for k, v in documents.items()],
+                )
+                db.execute("INSERT INTO metadata VALUES('legacy_import','complete')")
 
     async def find_one(self, query: dict) -> dict | None:
-        import copy
+        import json
 
-        async with self._lock:
-            doc = self.documents.get(query.get("_id") or query.get("phone_number"))
-            return copy.deepcopy(doc)
+        def operation():
+            with self.storage._connection() as db:
+                row = db.execute(
+                    "SELECT payload FROM documents WHERE id=?",
+                    (query.get("_id") or query.get("phone_number"),),
+                ).fetchone()
+                return json.loads(row[0]) if row else None
+
+        return await asyncio.to_thread(operation)
 
     async def insert_one(self, document: dict) -> None:
-        import copy
+        import json
+        import sqlite3
 
-        async with self._lock:
-            key = document.get("_id") or document.get("phone_number")
-            if key in self.documents:
-                raise DataAPIResponseException(
-                    "duplicate",
-                    command={},
-                    raw_response={},
-                    error_descriptors=[
-                        DataAPIErrorDescriptor(
-                            {
-                                "errorCode": "DOCUMENT_ALREADY_EXISTS",
-                                "message": "duplicate",
-                            }
-                        )
-                    ],
-                    warning_descriptors=[],
-                )
-            self.documents[key] = copy.deepcopy(document)
-            self._persist()
+        def operation():
+            with self.storage._connection() as db:
+                try:
+                    db.execute(
+                        "INSERT INTO documents VALUES(?,?)",
+                        (
+                            document.get("_id") or document.get("phone_number"),
+                            json.dumps(document),
+                        ),
+                    )
+                except sqlite3.IntegrityError:
+                    raise DataAPIResponseException(
+                        "duplicate",
+                        command={},
+                        raw_response={},
+                        error_descriptors=[
+                            DataAPIErrorDescriptor(
+                                {
+                                    "errorCode": "DOCUMENT_ALREADY_EXISTS",
+                                    "message": "duplicate",
+                                }
+                            )
+                        ],
+                        warning_descriptors=[],
+                    ) from None
+
+        await asyncio.to_thread(operation)
 
     async def replace_one(self, query: dict, document: dict):
-        import copy
+        import json
         from types import SimpleNamespace
 
-        async with self._lock:
-            key = query.get("_id")
-            old = self.documents.get(key)
-            matched = old is not None and old.get("revision") == query.get("revision")
-            if matched:
-                self.documents[key] = copy.deepcopy(document)
-                self._persist()
-            return SimpleNamespace(matched_count=int(bool(matched)))
+        def operation():
+            with self.storage._connection() as db:
+                result = db.execute(
+                    "UPDATE documents SET payload=? WHERE id=? AND json_extract(payload,'$.revision')=?",
+                    (json.dumps(document), query.get("_id"), query.get("revision")),
+                )
+                return SimpleNamespace(matched_count=result.rowcount)
+
+        return await asyncio.to_thread(operation)
 
     async def delete_one(self, query: dict) -> None:
-        async with self._lock:
-            key = query.get("_id") or query.get("phone_number")
-            self.documents.pop(key, None)
-            self._persist()
+        def operation():
+            with self.storage._connection() as db:
+                db.execute(
+                    "DELETE FROM documents WHERE id=?",
+                    (query.get("_id") or query.get("phone_number"),),
+                )
+
+        await asyncio.to_thread(operation)
+
+    async def mutate_document(self, key, change):
+        import json
+
+        def operation():
+            with self.storage._connection() as db:
+                db.execute("BEGIN IMMEDIATE")
+                row = db.execute(
+                    "SELECT payload FROM documents WHERE id=?", (key,)
+                ).fetchone()
+                doc = (
+                    json.loads(row[0])
+                    if row
+                    else {
+                        "_id": key,
+                        "phone_number": key,
+                        "history": [],
+                        "active_flow": None,
+                        "slots": {},
+                    }
+                )
+                change(doc)
+                db.execute(
+                    "INSERT INTO documents VALUES(?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload",
+                    (key, json.dumps(doc)),
+                )
+                return doc
+
+        return await asyncio.to_thread(operation)
 
 
-# Playbook Section 6.A Compatible Functional Interface
 _default_local_collection: LocalFileCollection | None = None
 
 
@@ -470,23 +533,13 @@ def _get_playbook_collection() -> LocalFileCollection:
 
 
 async def get_session(phone_number: str) -> dict[str, Any]:
-    """Playbook Section 6.A compatible session loader."""
+    """Legacy functional API, now transactionally persisted without lost turns."""
     from datetime import datetime, timezone
 
-    col = _get_playbook_collection()
-    doc = await col.find_one({"_id": phone_number, "phone_number": phone_number})
-    if not doc:
-        new_session = {
-            "_id": phone_number,
-            "phone_number": phone_number,
-            "history": [],
-            "active_flow": None,
-            "slots": {},
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }
-        await col.insert_one(new_session)
-        return new_session
-    return doc
+    def change(doc):
+        doc.setdefault("updated_at", datetime.now(timezone.utc).isoformat())
+
+    return await _get_playbook_collection().mutate_document(phone_number, change)
 
 
 async def save_turn(
@@ -496,18 +549,20 @@ async def save_turn(
     active_flow: str | None = None,
     slots: dict | None = None,
 ) -> dict[str, Any]:
-    """Playbook Section 6.A compatible 10-message sliding window & slot saver."""
     from datetime import datetime, timezone
 
-    col = _get_playbook_collection()
-    doc = await get_session(phone_number)
-    history = list(doc.get("history", []))
-    history.append({"role": "user", "content": user_msg})
-    history.append({"role": "assistant", "content": bot_msg})
-    doc["history"] = history[-10:]
-    doc["active_flow"] = active_flow
-    doc["slots"] = slots or {}
-    doc["updated_at"] = datetime.now(timezone.utc).isoformat()
-    col.documents[phone_number] = doc
-    col._persist()
-    return doc
+    def change(doc):
+        doc["history"] = (
+            doc.get("history", [])
+            + [
+                {"role": "user", "content": user_msg},
+                {"role": "assistant", "content": bot_msg},
+            ]
+        )[-10:]
+        doc.update(
+            active_flow=active_flow,
+            slots=slots or {},
+            updated_at=datetime.now(timezone.utc).isoformat(),
+        )
+
+    return await _get_playbook_collection().mutate_document(phone_number, change)

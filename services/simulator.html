@@ -1,0 +1,53 @@
+<!DOCTYPE html><html lang="ta"><head><meta charset="utf-8"><title>Thirdhand 🤝 Local WhatsApp Simulator</title>
+        <meta name="viewport" content="width=device-width,initial-scale=1">
+        <style>body{font-family:system-ui,sans-serif;background:#0b141a;color:#e9edef;margin:0;padding:20px}
+        .wrap{max-width:860px;margin:0 auto;display:grid;grid-template-columns:1fr;gap:16px}
+        .card{background:#111b21;border:1px solid #222e35;border-radius:16px;padding:20px}
+        h1{color:#00a884;margin:0 0 6px;font-size:20px}
+        .badge{display:inline-block;background:#202c33;color:#00a884;padding:4px 10px;border-radius:99px;font-size:12px;margin-bottom:10px}
+        .chat{background:#0b141a;padding:16px;border-radius:12px;height:380px;overflow-y:auto;margin-bottom:12px;border:1px solid #222e35}
+        .msg-u{background:#005c4b;color:#fff;padding:10px 14px;border-radius:12px;margin:8px 0 8px auto;max-width:78%;white-space:pre-wrap;font-size:14px}
+        .msg-b{background:#202c33;color:#e9edef;padding:10px 14px;border-radius:12px;margin:8px auto 8px 0;max-width:82%;white-space:pre-wrap;font-size:14px;border:1px solid #2a3942}
+        .btns{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+        .rbtn{background:#182229;color:#00a884;border:1px solid #00a884;padding:7px 14px;border-radius:8px;cursor:pointer;font-weight:600;font-size:13px}
+        .rbtn:hover{background:#00a884;color:#0b141a}
+        .row{display:flex;gap:8px}
+        input{flex:1;padding:12px;border-radius:10px;border:1px solid #2a3942;background:#202c33;color:#fff;font-size:14px}
+        button.send{background:#00a884;color:#0b141a;font-weight:700;border:none;padding:12px 20px;border-radius:10px;cursor:pointer}
+        button.reset{background:#2a3942;color:#d1d7db;border:none;padding:8px 12px;border-radius:8px;cursor:pointer;font-size:12px;float:right}</style></head>
+        <body><div class="wrap"><div class="card">
+        <button class="reset" onclick="sendMsg('reset')">🔄 Reset Onboarding</button>
+        <input id="token" type="password" autocomplete="off" placeholder="Local simulator token" /><h1>Thirdhand 🤝 — WhatsApp AI Super-Agent</h1>
+        <div id="pbadge" class="badge">Private local simulator · optional city/location</div>
+        <div id="chat" class="chat"></div>
+        <div class="row">
+          <input id="msg" placeholder="Type here (or click a button above)..." onkeydown="if(event.key==='Enter')sendMsg()" />
+          <button class="send" onclick="sendMsg()">Send ➤</button>
+        </div></div></div>
+        <script>
+        async function sendMsg(preset){
+          const input=document.getElementById('msg');const chat=document.getElementById('chat');
+          const text=(preset!==undefined)?preset:input.value.trim();if(!text)return;
+          if(preset===undefined)input.value='';
+          const u=document.createElement('div');u.className='msg-u';u.textContent=text;chat.appendChild(u);
+          const res=await fetch('/api/simulate',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+document.getElementById('token').value},body:JSON.stringify({text})});
+          const data=await res.json();
+          const b=document.createElement('div');b.className='msg-b';b.textContent=data.reply||data.error||data.detail||"Request unavailable";
+          if(data.buttons&&data.buttons.length){
+            const bw=document.createElement('div');bw.className='btns';
+            data.buttons.forEach(btn=>{
+              const el=document.createElement('button');el.className='rbtn';el.textContent=btn.title;
+              el.onclick=()=>sendMsg(btn.id);bw.appendChild(el);
+            });
+            b.appendChild(bw);
+          }
+          chat.appendChild(b);chat.scrollTop=chat.scrollHeight;
+          if(data.profile){
+            const p=data.profile;
+            document.getElementById('pbadge').textContent = p.place
+              ? `City: ${p.place} | Language: ${p.language || 'choose a language'}`
+              : 'Optional location: send a city, share a pin, or skip';
+          }
+        }
+        
+        </script></body></html>

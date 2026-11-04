@@ -8,27 +8,41 @@ import httpx
 
 from config.settings import Settings
 from services.http import UpstreamError, request_json
+from services.outbound import Outbound
 
 
 class WhatsAppClient:
-    def __init__(self, settings: Settings, client: httpx.AsyncClient) -> None:
+    def __init__(
+        self, settings: Settings, client: httpx.AsyncClient, inbox=None
+    ) -> None:
         self.settings = settings
         self.client = client
+        self.outbound = Outbound(inbox) if inbox is not None else None
         self.base = f"https://graph.facebook.com/{settings.meta_api_version}"
         self.headers = {
             "Authorization": f"Bearer {settings.meta_access_token.get_secret_value()}"
         }
 
     async def _send(self, recipient: str, payload: dict) -> dict:
-        if not recipient.isdigit() or not 7 <= len(recipient) <= 15:
+        if (
+            not recipient.isascii()
+            or not recipient.isdigit()
+            or not 7 <= len(recipient) <= 15
+        ):
             raise ValueError("Recipient must be an international numeric WhatsApp ID")
-        return await request_json(
-            self.client,
-            "POST",
-            f"{self.base}/{self.settings.meta_phone_number_id}/messages",
-            headers=self.headers,
-            json={"messaging_product": "whatsapp", "to": recipient, **payload},
-        )
+
+        async def send():
+            return await request_json(
+                self.client,
+                "POST",
+                f"{self.base}/{self.settings.meta_phone_number_id}/messages",
+                headers=self.headers,
+                json={"messaging_product": "whatsapp", "to": recipient, **payload},
+            )
+
+        if self.outbound is not None:
+            return await self.outbound.send(recipient, payload, send)
+        return await send()
 
     async def send_text(self, recipient: str, text: str) -> dict:
         if not text or len(text) > 4096:
@@ -107,7 +121,7 @@ class WhatsAppClient:
         )
 
     async def download_media(self, media_id: str) -> tuple[bytes, str]:
-        if not media_id.isdigit():
+        if not media_id.isascii() or not media_id.isdigit() or len(media_id) > 64:
             raise ValueError("Invalid Meta media ID")
         info = await request_json(
             self.client, "GET", f"{self.base}/{media_id}", headers=self.headers
@@ -115,6 +129,7 @@ class WhatsAppClient:
         url = urlsplit(info.get("url", ""))
         if (
             url.scheme != "https"
+            or url.port not in (None, 443)
             or url.username
             or url.password
             or not url.hostname
@@ -127,6 +142,7 @@ class WhatsAppClient:
             raise UpstreamError("Untrusted Meta media URL")
         mime = info.get("mime_type", "").split(";")[0]
         if mime not in {
+            "application/pdf",
             "image/jpeg",
             "image/png",
             "image/webp",

@@ -102,7 +102,9 @@ class LocalScoutTool(LocalTool):
         for city, (lat, lng) in CITY_DEFAULT_COORDS.items():
             if city in text:
                 return await self.search_nearby_places(category, lat, lng, radius)
-        return await self.search_nearby_places(category, 10.7905, 78.7047, radius)
+        raise ValueError(
+            "Location is unverified; provide a supported city or coordinates"
+        )
 
     async def check_tneb_bill_status(
         self, consumer_number: str, units_consumed: int | None = None

@@ -1,8 +1,9 @@
 FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 WORKDIR /app
-COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt \
+ARG INSTALL_TEST_DEPS=false
+COPY requirements.txt requirements-dev.txt constraints.txt ./
+RUN if [ "$INSTALL_TEST_DEPS" = "true" ]; then pip install --no-cache-dir -r requirements-dev.txt; else pip install --no-cache-dir -r requirements.txt; fi \
     && apt-get update && apt-get install -y --no-install-recommends ffmpeg \
     && python -m playwright install --with-deps --no-shell chromium \
     && rm -rf /var/lib/apt/lists/* \

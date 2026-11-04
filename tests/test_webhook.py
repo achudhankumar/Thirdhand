@@ -4,6 +4,8 @@ import asyncio
 import hashlib
 import hmac
 import json
+import logging
+import time
 
 import httpx
 import pytest
@@ -34,17 +36,19 @@ def payload(message_id="wamid.test"):
             {
                 "changes": [
                     {
+                        "field": "messages",
                         "value": {
                             "metadata": {"phone_number_id": "123456"},
                             "messages": [
                                 {
                                     "id": message_id,
                                     "from": "919876543210",
+                                    "timestamp": str(int(time.time())),
                                     "type": "text",
                                     "text": {"body": "12606 train enga iruku"},
                                 }
                             ],
-                        }
+                        },
                     }
                 ]
             }
@@ -92,9 +96,9 @@ async def test_signed_dedup_and_persistence(gateway, settings):
     assert item["message"]["text"]["body"].endswith("enga iruku")
     restarted = Inbox(settings.inbox_path)
     await restarted.initialize()
-    assert await restarted.counts() == {"pending": 1}
-    await restarted.claim()
-    await restarted.finish(item["id"], True)
+    assert await restarted.counts() == {"processing": 1}
+    assert await restarted.claim() is None
+    await restarted.finish(item["id"], True, item["lease_token"])
     assert (
         await client.post("/webhook", content=body, headers=headers)
     ).status_code == 200
@@ -142,8 +146,8 @@ async def test_body_limit(gateway, settings):
 async def test_queue_failed_retained(gateway):
     _, inbox = gateway
     await inbox.enqueue([{"id": "x"}])
-    await inbox.claim()
-    await inbox.finish("x", False)
+    item = await inbox.claim()
+    await inbox.finish("x", False, item["lease_token"])
     assert await inbox.counts() == {"failed": 1}
     assert await inbox.claim() is None
 
@@ -157,11 +161,17 @@ async def test_application_lifespan_worker(settings, memory, monkeypatch):
     monkeypatch.setattr(main, "get_settings", lambda: settings)
     memory.initialize = AsyncMock()
     monkeypatch.setattr(main, "AstraMemory", lambda config: memory)
-    processor = SimpleNamespace(handle_message=AsyncMock(), client=AsyncMock())
+    processor = SimpleNamespace(
+        handle_message=AsyncMock(),
+        client=AsyncMock(),
+        global_features=SimpleNamespace(inbox=None),
+    )
     monkeypatch.setattr(main, "LLMOrchestrator", lambda *args: processor)
     app = main.FastAPI(lifespan=main.lifespan)
     app.include_router(router)
     async with app.router.lifespan_context(app):
+        for name in ("openai", "httpx2", "httpcore2"):
+            assert logging.getLogger(name).level == logging.WARNING
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="https://test"
         ) as client:

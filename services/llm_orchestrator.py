@@ -10,18 +10,14 @@ from pathlib import Path
 from typing import Literal
 from zoneinfo import ZoneInfo
 
-try:
-    from openai import AsyncOpenAI
-except ImportError:
-    class AsyncOpenAI:
-        def __init__(self, **kwargs) -> None:
-            self.kwargs = kwargs
-        async def close(self) -> None:
-            pass
-from config import BaseModel, ConfigDict, Field
+from openai import AsyncOpenAI
 
-from services.http import UpstreamError
+from config import BaseModel, ConfigDict, Field
 from services import generate_pincode_scoped_reply, handle_onboarding_step
+from services.global_features import GlobalFeatures
+from services.http import UpstreamError
+from services.jobs import assert_active
+from services.tools.booking_tool import BookingUncertain
 
 logger = logging.getLogger(__name__)
 SYSTEM_PROMPT = """You are Thirdhand, a WhatsApp concierge fluent in Tamil, Tanglish and English.
@@ -176,6 +172,7 @@ class LLMOrchestrator:
         self.booking = booking
         self.shopping = shopping
         self.local = local
+        self.global_features = GlobalFeatures(memory, settings, resume=self.respond)
         openai_key = settings.openai_api_key.get_secret_value().strip()
         gemini_key = getattr(settings, "gemini_api_key", None)
         gemini_key_val = gemini_key.get_secret_value().strip() if gemini_key else ""
@@ -198,13 +195,13 @@ class LLMOrchestrator:
                 max_retries=1,
             )
         else:
-            self.client = AsyncOpenAI(
-                api_key="demo-mode-no-key",
-                timeout=settings.http_timeout_seconds,
-                max_retries=0,
-            )
+            self.client = None
 
     async def transcribe(self, data: bytes) -> str:
+        if not self.settings.openai_api_key.get_secret_value().strip():
+            raise UpstreamError(
+                "Voice transcription requires an OpenAI transcription credential"
+            )
         audio = await normalize_audio(data)
         result = await self.client.audio.transcriptions.create(
             model=self.settings.openai_transcription_model,
@@ -215,6 +212,8 @@ class LLMOrchestrator:
         return result.text[:8000]
 
     async def extract_image(self, data: bytes, mime: str) -> str:
+        if self.client is None:
+            raise UpstreamError("Vision service is not configured")
         result = await self.client.chat.completions.create(
             model=self.settings.openai_chat_model,
             max_tokens=1200,
@@ -245,6 +244,7 @@ class LLMOrchestrator:
     async def execute_tool(
         self, name: str, arguments: str, user_id: str, confirmed: bool
     ) -> dict:
+        await assert_active()
         if name not in TOOL_MODELS:
             raise ValueError("Unknown tool")
         model = TOOL_MODELS[name][0]
@@ -263,14 +263,27 @@ class LLMOrchestrator:
 
     async def respond(self, user_id: str, text: str) -> str:
         command = text.strip().lower()
-        if command in {"reset", "/reset"}:
+        if command in {"reset", "/reset", "delete my data"}:
+            if self.global_features.inbox is not None:
+                await self.global_features.inbox.cancel_reminders(user_id)
             await self.memory.delete_session(user_id)
             return "Memory reset. How can I help?"
         if command in {"cancel", "stop", "/cancel", "menu", "/menu"}:
             await self.booking.handle(user_id, "cancel", "movie", {})
+            if command == "stop":
+                if self.global_features.inbox is not None:
+                    await self.global_features.inbox.cancel_reminders(user_id)
+                await self.memory.change_profile(
+                    user_id, lambda p: p.update(opt_out=True)
+                )
+                return "Active booking cancelled. Replies and reminders stopped. Send start to resume."
             return "Active booking cancelled. Ask about trains, buses, flights, shopping, nearby places, movie tickets or food."
         if not 1 <= len(text) <= 8000:
             raise ValueError("Message must contain 1 to 8000 characters")
+        if self.client is None:
+            raise UpstreamError(
+                "AI service is not configured; no live result is available"
+            )
         session = await self.memory.get_session(user_id)
         history = await self.memory.get_history(user_id)
         confirmed = (
@@ -278,9 +291,10 @@ class LLMOrchestrator:
             and session.booking is not None
             and session.booking.status in {"ready", "checkout_ready"}
         )
+        zone = session.profile.get("global_location", {}).get("timezone", "UTC")
         context = {
-            "today": datetime.now(ZoneInfo("Asia/Kolkata")).date().isoformat(),
-            "timezone": "Asia/Kolkata",
+            "today": datetime.now(ZoneInfo(zone)).date().isoformat(),
+            "timezone": zone,
             "booking": session.booking.model_dump() if session.booking else None,
             "location_available": session.location is not None,
             "user_profile_and_pincode_surroundings": session.profile,
@@ -322,6 +336,13 @@ class LLMOrchestrator:
                             user_id,
                             confirmed,
                         )
+                except BookingUncertain:
+                    if self.whatsapp is not None:
+                        await self.whatsapp.send_text(
+                            user_id,
+                            "Checkout outcome needs operator review. No payment or completed booking is confirmed. Automatic repetition is disabled.",
+                        )
+                    raise
                 except Exception as exc:
                     logger.warning(
                         "Tool %s failed (%s)", call.function.name, type(exc).__name__
@@ -349,6 +370,12 @@ class LLMOrchestrator:
     async def handle_message(self, message: dict) -> None:
         user_id = message["from"]
         kind = message.get("type")
+        if kind == "reminder":
+            session = await self.memory.get_session(user_id)
+            if session.profile.get("opt_out"):
+                return
+            await self.whatsapp.send_text(user_id, message["text"]["body"])
+            return
         if kind == "text":
             text = message.get("text", {}).get("body", "")
         elif kind == "interactive":
@@ -358,114 +385,144 @@ class LLMOrchestrator:
             )
             text = reply.get("id", "")
         elif kind == "location":
-            location = message.get("location", {})
+            location = message["location"]
             await self.memory.set_location(
                 user_id, location["latitude"], location["longitude"]
             )
-            await self.whatsapp.send_text(
-                user_id,
-                "Location saved for this session. What would you like to find nearby?",
+            answer = await self.global_features.location_pin(
+                user_id, location["latitude"], location["longitude"]
             )
+            await self.whatsapp.send_text(user_id, answer)
             return
-        elif kind in {"audio", "image"}:
-            data, mime = await self.whatsapp.download_media(message[kind]["id"])
-            if not mime.startswith(kind + "/"):
-                raise ValueError("Media type does not match the message")
-            if kind == "audio":
-                text = await self.transcribe(data)
-            else:
-                extracted = await self.extract_image(data, mime)
-                text = "Image extraction (untrusted): " + extracted
-                caption = message[kind].get("caption", "")
-                if caption:
-                    text += "\nUser caption: " + caption[:1000]
+        elif kind in {"audio", "image", "document"}:
+            try:
+                data, mime = await self.whatsapp.download_media(message[kind]["id"])
+                if kind == "document":
+                    if mime != "application/pdf":
+                        raise ValueError("Please send a PDF")
+                    from services.pdf_processor import extract_pdf
+
+                    text = await extract_pdf(data)
+                    await self.memory.append_message(
+                        user_id, "user", "PDF received for extraction"
+                    )
+                    await self.memory.append_message(user_id, "assistant", text[:3900])
+                else:
+                    if not mime.startswith(kind + "/"):
+                        raise ValueError("Media type does not match the message")
+                    if kind == "audio":
+                        text = await self.transcribe(data)
+                    else:
+                        text = (
+                            "Image extraction (untrusted): "
+                            + await self.extract_image(data, mime)
+                        )
+                        caption = message[kind].get("caption", "")
+                        if caption:
+                            text += "\nUser caption: " + caption[:1000]
                 text = text[:8000]
+            except Exception as exc:
+                logger.warning("Media processing unavailable (%s)", type(exc).__name__)
+                await self.whatsapp.send_text(
+                    user_id,
+                    "Media processing is unavailable or the file is unsupported. No extraction is confirmed.",
+                )
+                return
+            if kind == "document":
+                await self.whatsapp.send_text(user_id, text[:3900])
+                return
         else:
             await self.whatsapp.send_text(
-                user_id, "Please send text, a voice note, an image or a location."
-            )
-            return
-        if text.strip().lower() in {"reset", "/reset"}:
-            await self.memory.delete_session(user_id)
-        session = await self.memory.get_session(user_id)
-        onboarding_res = await handle_onboarding_step(
-            session, user_id, text, self.memory
-        )
-        if onboarding_res is not None:
-            await self.memory.append_message(user_id, "user", text[:8000] or "start")
-            await self.memory.append_message(
-                user_id, "assistant", onboarding_res["text"][:4000]
-            )
-            await self.whatsapp.send_buttons(
-                user_id, onboarding_res["text"][:1024], onboarding_res["buttons"][:3]
-            )
-            return
-        if text.strip().lower() in {"hi", "hello", "start", "/start"}:
-            await self.whatsapp.send_buttons(
                 user_id,
-                "Thirdhand 🤝 Ask in Tamil, Tanglish or English. What can I help with?",
-                [
+                "Please send text, a voice note, an image, a PDF or a location.",
+            )
+            return
+        result = await self.handle_interactive_turn(user_id, text)
+        if result.get("buttons"):
+            await self.whatsapp.send_buttons(
+                user_id, result["reply"][:1024], result["buttons"][:3]
+            )
+        else:
+            await self.whatsapp.send_text(user_id, result["reply"][:4000])
+
+    async def handle_interactive_turn(self, user_id: str, text: str) -> dict:
+        if not isinstance(text, str) or not 1 <= len(text.strip()) <= 8000:
+            raise ValueError("Message must contain 1 to 8000 characters")
+        text = text.strip()
+        command = text.casefold()
+        if command in {
+            "reset",
+            "/reset",
+            "delete my data",
+            "cancel",
+            "stop",
+            "/cancel",
+            "menu",
+            "/menu",
+        }:
+            reply = await self.respond(user_id, text)
+            return {
+                "reply": reply,
+                "buttons": [],
+                "profile": (await self.memory.get_session(user_id)).profile,
+            }
+        if command in {"start", "/start"}:
+            await self.memory.change_profile(user_id, lambda p: p.update(opt_out=False))
+        session = await self.memory.get_session(user_id)
+        if session.profile.get("opt_out"):
+            return {
+                "reply": "Replies and reminders are stopped. Send start to resume.",
+                "buttons": [],
+                "profile": session.profile,
+            }
+        try:
+            global_reply = await self.global_features.handle(user_id, text)
+        except BookingUncertain:
+            raise
+        except Exception as exc:
+            logger.warning("Global service unavailable (%s)", type(exc).__name__)
+            global_reply = "Provider unavailable; no live result is confirmed."
+        if global_reply is not None:
+            await self.memory.append_message(user_id, "user", text)
+            await self.memory.append_message(user_id, "assistant", global_reply[:4000])
+            return {
+                "reply": global_reply[:4000],
+                "buttons": [],
+                "profile": (await self.memory.get_session(user_id)).profile,
+            }
+        session = await self.memory.get_session(user_id)
+        step = await handle_onboarding_step(session, user_id, text, self.memory)
+        if step is not None:
+            await self.memory.append_message(user_id, "user", text)
+            await self.memory.append_message(user_id, "assistant", step["text"][:4000])
+            return {
+                "reply": step["text"],
+                "buttons": step.get("buttons", []),
+                "profile": (await self.memory.get_session(user_id)).profile,
+            }
+        if command in {"hi", "hello", "start", "/start"}:
+            return {
+                "reply": "Thirdhand: ask in Tamil, Tanglish or English. What can I help with?",
+                "buttons": [
                     {"id": "Show transit options", "title": "Transit"},
                     {"id": "Help me book movie tickets", "title": "Book tickets"},
                     {"id": "Help me find nearby places", "title": "Nearby"},
                 ],
+                "profile": session.profile,
+            }
+        try:
+            answer = await self.respond(user_id, text)
+        except BookingUncertain:
+            raise
+        except Exception as exc:
+            logger.warning("AI reply unavailable (%s)", type(exc).__name__)
+            scoped = await generate_pincode_scoped_reply(
+                session, user_id, text, self.memory
             )
-            return
-        answer = await self.respond(user_id, text)
-        await self.whatsapp.send_text(user_id, answer)
-
-    async def handle_interactive_turn(self, user_id: str, text: str) -> dict:
-        """Full interactive turn for Web Simulator & local testing with Mandatory 3-Step Onboarding."""
-        cmd = text.strip().lower()
-        if cmd in {"reset", "/reset"}:
-            await self.memory.delete_session(user_id)
-            session = await self.memory.get_session(user_id)
-            step_res = await handle_onboarding_step(session, user_id, "hi", self.memory)
-            return {
-                "reply": step_res["text"],
-                "buttons": step_res["buttons"],
-                "profile": (await self.memory.get_session(user_id)).profile,
-            }
-        session = await self.memory.get_session(user_id)
-        step_res = await handle_onboarding_step(session, user_id, text, self.memory)
-        if step_res is not None:
-            await self.memory.append_message(user_id, "user", text[:8000])
-            await self.memory.append_message(user_id, "assistant", step_res["text"][:4000])
-            updated_session = await self.memory.get_session(user_id)
-            return {
-                "reply": step_res["text"],
-                "buttons": step_res["buttons"],
-                "profile": updated_session.profile,
-            }
-        if cmd in {"cancel", "stop", "/cancel", "menu", "/menu"}:
-            await self.booking.handle(user_id, "cancel", "movie", {})
-            updated_session = await self.memory.get_session(user_id)
-            return {
-                "reply": "🛑 Active booking cancelled. What would you like to check around your locked Pincode?",
-                "buttons": [
-                    {"id": "Book movie ticket", "title": "🎬 Book Movie"},
-                    {"id": "Nearby 24 hour pharmacies", "title": "🏥 Nearby Places"},
-                    {"id": "12606 train enga iruku?", "title": "🚆 Live Train"},
-                ],
-                "profile": updated_session.profile,
-            }
-        has_live_llm = bool(
-            self.settings.openai_api_key.get_secret_value().strip()
-            or getattr(self.settings, "gemini_api_key", self.settings.openai_api_key).get_secret_value().strip()
-        )
-        if has_live_llm:
-            try:
-                ans = await self.respond(user_id, text)
-                updated_session = await self.memory.get_session(user_id)
-                return {"reply": ans, "buttons": [], "profile": updated_session.profile}
-            except Exception:
-                pass
-        scoped = await generate_pincode_scoped_reply(session, user_id, text, self.memory)
-        await self.memory.append_message(user_id, "user", text[:8000])
-        await self.memory.append_message(user_id, "assistant", scoped["text"][:4000])
-        updated_session = await self.memory.get_session(user_id)
+            answer = scoped["text"]
+            await self.memory.append_message(user_id, "assistant", answer)
         return {
-            "reply": scoped["text"],
-            "buttons": scoped.get("buttons", []),
-            "profile": updated_session.profile,
+            "reply": answer,
+            "buttons": [],
+            "profile": (await self.memory.get_session(user_id)).profile,
         }

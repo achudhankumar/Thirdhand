@@ -22,6 +22,8 @@ class MediaProcessor:
         return await self.transcribe_bytes(data)
 
     async def transcribe_bytes(self, data: bytes) -> str:
+        if not self.settings.openai_api_key.get_secret_value().strip():
+            raise ValueError("Voice transcription requires an OpenAI credential")
         audio = await normalize_audio(data)
         result = await self.llm_client.audio.transcriptions.create(
             model=self.settings.openai_transcription_model,

@@ -11,15 +11,17 @@ from typing import Literal
 from urllib.parse import urljoin, urlsplit
 from zoneinfo import ZoneInfo
 
-try:
-    from playwright.async_api import async_playwright
-except ImportError:
-    async_playwright = None
-from config import BaseModel, ConfigDict, Field
+from playwright.async_api import async_playwright
 
+from config import BaseModel, ConfigDict, Field
 from services.http import UpstreamError
+from services.jobs import assert_active
 
 logger = logging.getLogger(__name__)
+
+
+class BookingUncertain(UpstreamError):
+    """A merchant may have acted; quarantine the job instead of model retry."""
 
 
 class Step(BaseModel):
@@ -67,6 +69,7 @@ class CheckoutBrowser:
         self.settings = settings
 
     async def checkout(self, profile: MerchantProfile, slots: dict) -> str:
+        await assert_active()
         await public_url(profile.start_url, profile.hosts)
         async with async_playwright() as playwright:
             browser = await playwright.chromium.launch(
@@ -91,6 +94,7 @@ class CheckoutBrowser:
                 async with asyncio.timeout(120):
                     await page.goto(profile.start_url, wait_until="domcontentloaded")
                     for step in profile.steps:
+                        await assert_active()
                         locator = page.locator(step.selector)
                         value = slots.get(step.slot) if step.slot else step.value
                         if step.action in {"fill", "select"} and value is None:
@@ -128,9 +132,15 @@ class CheckoutBrowser:
 
 class BookingTool:
     def __init__(
-        self, settings, memory, browser: CheckoutBrowser | None = None
+        self,
+        settings,
+        memory,
+        browser: CheckoutBrowser | None = None,
+        *,
+        allow_checkout: bool = True,
     ) -> None:
         self.settings = settings
+        self.allow_checkout = allow_checkout
         self.memory = memory
         self.browser = browser or CheckoutBrowser(settings)
         data = json.loads(
@@ -139,7 +149,7 @@ class BookingTool:
         self.profiles = [MerchantProfile.model_validate(item) for item in data]
 
     @staticmethod
-    def validate_slots(kind: str, slots: dict) -> None:
+    def validate_slots(kind: str, slots: dict, timezone: str = "Asia/Kolkata") -> None:
         allowed = (
             {"theatre", "movie", "date", "showtime", "seat_count", "seat_class"}
             if kind == "movie"
@@ -166,7 +176,7 @@ class BookingTool:
                 raise ValueError("Booking fields must be short non-empty strings")
         if slots.get("date"):
             day = datetime.strptime(slots["date"], "%Y-%m-%d").date()
-            if day < datetime.now(ZoneInfo("Asia/Kolkata")).date():
+            if day < datetime.now(ZoneInfo(timezone)).date():
                 raise ValueError("Booking date cannot be in the past")
         if slots.get("showtime"):
             datetime.strptime(slots["showtime"], "%H:%M")
@@ -184,7 +194,10 @@ class BookingTool:
                     user_id, "cancelled", session.revision
                 )
             return {"status": "cancelled"}
-        self.validate_slots(kind, slots)
+        zone = session.profile.get("global_location", {}).get(
+            "timezone", "Asia/Kolkata"
+        )
+        self.validate_slots(kind, slots, zone)
         if action == "update":
             if session.booking is None or session.booking.status in {
                 "cancelled",
@@ -206,6 +219,8 @@ class BookingTool:
             }
         if action != "checkout" or not confirmed:
             raise ValueError("Checkout requires a separate explicit user confirmation")
+        if not self.allow_checkout:
+            raise UpstreamError("Merchant checkout is disabled in the local simulator")
         booking = session.booking
         if not booking or booking.kind != kind:
             raise ValueError("No matching active booking")
@@ -217,7 +232,7 @@ class BookingTool:
             }
         if booking.status != "ready":
             raise ValueError("Booking is incomplete or needs operator review")
-        self.validate_slots(kind, booking.slots)
+        self.validate_slots(kind, booking.slots, zone)
         name = booking.slots.get("theatre" if kind == "movie" else "restaurant", "")
         profile = next(
             (
@@ -247,6 +262,6 @@ class BookingTool:
             }
         except Exception as exc:
             logger.error("Checkout needs review (%s)", type(exc).__name__)
-            raise UpstreamError(
+            raise BookingUncertain(
                 "Checkout could not be verified. Booking remains pending for review; automatic repetition is disabled."
             ) from exc

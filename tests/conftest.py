@@ -61,6 +61,7 @@ def settings(tmp_path):
         meta_verify_token="test-verify",
         meta_app_secret="test-secret",
         meta_phone_number_id="123456",
+        meta_api_version="v23.0",
         rapidapi_key="test-rapid",
         google_places_api_key="test-places",
         google_routes_api_key="test-routes",
