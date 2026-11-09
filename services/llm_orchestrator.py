@@ -268,9 +268,17 @@ class LLMOrchestrator:
                 await self.global_features.inbox.cancel_reminders(user_id)
             await self.memory.delete_session(user_id)
             return "Memory reset. How can I help?"
-        if command in {"cancel", "stop", "/cancel", "menu", "/menu"}:
+        if command in {
+            "cancel",
+            "stop",
+            "/stop",
+            "unsubscribe",
+            "/cancel",
+            "menu",
+            "/menu",
+        }:
             await self.booking.handle(user_id, "cancel", "movie", {})
-            if command == "stop":
+            if command in {"stop", "/stop", "unsubscribe"}:
                 if self.global_features.inbox is not None:
                     await self.global_features.inbox.cancel_reminders(user_id)
                 await self.memory.change_profile(
@@ -384,6 +392,13 @@ class LLMOrchestrator:
                 interactive.get("button_reply") or interactive.get("list_reply") or {}
             )
             text = reply.get("id", "")
+        elif kind in {"location", "audio", "image", "document"} and (
+            await self.memory.get_session(user_id)
+        ).profile.get("opt_out"):
+            await self.whatsapp.send_text(
+                user_id, "Replies and reminders are stopped. Send start to resume."
+            )
+            return
         elif kind == "location":
             location = message["location"]
             await self.memory.set_location(
@@ -456,6 +471,8 @@ class LLMOrchestrator:
             "delete my data",
             "cancel",
             "stop",
+            "/stop",
+            "unsubscribe",
             "/cancel",
             "menu",
             "/menu",

@@ -158,8 +158,15 @@ async def receive(request: Request):
                     != settings.meta_phone_number_id
                 ):
                     continue
+                display_phone = "".join(
+                    ch
+                    for ch in str(value["metadata"].get("display_phone_number", ""))
+                    if ch.isdigit()
+                )
                 for message in entries(value.get("messages", [])):
                     validate_message(message)
+                    if display_phone and message.get("from") == display_phone:
+                        continue
                     messages.append(message)
                 for status in entries(value.get("statuses", [])):
                     if (

@@ -478,6 +478,8 @@ async def handle_onboarding_step(
         "cancel",
         "/cancel",
         "stop",
+        "/stop",
+        "unsubscribe",
         "menu",
         "/menu",
         "delete my data",

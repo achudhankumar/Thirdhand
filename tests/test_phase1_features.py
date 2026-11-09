@@ -398,3 +398,35 @@ async def test_language_change_persists_and_keeps_confirmed_city(settings, memor
     assert session.profile["language"] == "tamil"
     assert session.profile["global_location"]["city"] == "Toronto"
     assert session.profile["onboarding_step"] == "completed"
+
+
+async def test_opt_out_blocks_media_and_location_and_accepts_unsubscribe(
+    settings, memory
+):
+    whatsapp = AsyncMock()
+    service = LLMOrchestrator(
+        settings,
+        memory,
+        whatsapp,
+        AsyncMock(),
+        BookingTool(settings, memory),
+        AsyncMock(),
+        AsyncMock(),
+        client=AsyncMock(),
+    )
+    reply = await service.handle_interactive_turn("u", "unsubscribe")
+    assert "stopped" in reply["reply"].lower()
+    assert (await memory.get_session("u")).profile["opt_out"] is True
+    for incoming in [
+        {
+            "from": "u",
+            "type": "location",
+            "location": {"latitude": 13.08, "longitude": 80.27},
+        },
+        {"from": "u", "type": "audio", "audio": {"id": "123"}},
+        {"from": "u", "type": "document", "document": {"id": "456"}},
+    ]:
+        await service.handle_message(incoming)
+    whatsapp.download_media.assert_not_awaited()
+    assert (await memory.get_session("u")).location is None
+    assert whatsapp.send_text.await_count == 3

@@ -18,6 +18,7 @@ def main(argv=None):
     parser.add_argument("--database", required=True)
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("summary")
+    sub.add_parser("live")
     backup = sub.add_parser("backup")
     backup.add_argument("--output", required=True)
     resolve = sub.add_parser("resolve")
@@ -58,6 +59,25 @@ def main(argv=None):
                 )
             ]
             print(json.dumps({"counts": counts, "needs_review": rows}, indent=2))
+            return
+        if args.command == "live":
+            inbound = [
+                dict(r)
+                for r in db.execute(
+                    "SELECT id,sender,status,created,updated,last_error FROM inbox ORDER BY created DESC LIMIT 25"
+                )
+            ]
+            outbound = [
+                dict(r)
+                for r in db.execute(
+                    "SELECT id,job_id,recipient,state,provider_id,error_code,updated FROM outbound ORDER BY created DESC LIMIT 25"
+                )
+            ]
+            print(
+                json.dumps(
+                    {"recent_inbound": inbound, "recent_outbound": outbound}, indent=2
+                )
+            )
             return
         if not 8 <= len(args.reason) <= 500:
             parser.error(
