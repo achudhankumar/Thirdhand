@@ -6,7 +6,9 @@ import time
 from contextlib import asynccontextmanager
 
 import httpx
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from pathlib import Path
 
 from config.settings import get_settings
 from database.astra_db import AstraMemory
@@ -16,8 +18,8 @@ from routers.webhook import router
 from services.jobs import JobContext, current_job
 from services.llm_orchestrator import LLMOrchestrator
 from services.outbound import SendPolicyError
-from services.tools.booking_tool import BookingTool
-from services.tools.local_tool import LocalTool
+from services.tools.booking_tool import BookingTool, BookingUncertain
+from services.tools.local_scout_tool import LocalScoutTool
 from services.tools.shopping_tool import ShoppingTool
 from services.tools.transit_tool import TransitTool
 from services.whatsapp_client import WhatsAppClient
@@ -54,7 +56,7 @@ async def run_worker(app: FastAPI, stop: asyncio.Event) -> None:
             item = await inbox.claim()
             if item is None:
                 try:
-                    await asyncio.wait_for(stop.wait(), 0.5)
+                    await asyncio.wait_for(stop.wait(), 0.05)
                 except TimeoutError:
                     pass
                 continue
@@ -70,7 +72,7 @@ async def run_worker(app: FastAPI, stop: asyncio.Event) -> None:
             )
             handler = asyncio.create_task(_process_message(app, message))
             heartbeat = asyncio.create_task(_renew_lease(inbox, item, handler))
-            success, review, error = False, True, None
+            success, review, error = False, False, None
             try:
                 async with asyncio.timeout(
                     app.state.settings.processing_timeout_seconds
@@ -79,13 +81,16 @@ async def run_worker(app: FastAPI, stop: asyncio.Event) -> None:
                 success = True
             except SendPolicyError:
                 review, error = False, "send_policy_blocked"
+            except BookingUncertain as exc:
+                review, error = True, type(exc).__name__
+                logger.error("Booking checkout needs operator review (%s)", error)
             except asyncio.CancelledError:
                 if asyncio.current_task().cancelling():
                     raise
                 error = "lease_renewal_failed"
             except Exception as exc:
                 error = type(exc).__name__
-                logger.error("Message processing needs review (%s)", error)
+                logger.error("Message processing failed (%s)", error)
             finally:
                 handler.cancel()
                 heartbeat.cancel()
@@ -132,7 +137,7 @@ async def lifespan(app: FastAPI):
             TransitTool(settings, client),
             BookingTool(settings, memory),
             ShoppingTool(client),
-            LocalTool(settings, client),
+            LocalScoutTool(settings, client),
         )
         orchestrator.global_features.inbox = inbox
         app.state.settings = settings
@@ -184,6 +189,16 @@ async def ready():
         except Exception:
             healthy = False
     return JSONResponse({"ready": healthy}, status_code=200 if healthy else 503)
+
+
+@app.get("/media/{filename}")
+async def get_media_file(filename: str):
+    safe_name = Path(filename).name
+    target = Path("data/generated_diagrams") / safe_name
+    if not target.exists():
+        raise HTTPException(404, "Media file not found")
+    media_type = "image/jpeg" if safe_name.endswith((".jpg", ".jpeg")) else "image/png"
+    return FileResponse(target, media_type=media_type)
 
 
 app.include_router(simulator_router)

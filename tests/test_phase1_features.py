@@ -29,7 +29,9 @@ async def test_no_fabricated_results_or_unknown_geography(memory):
     assert await resolve_pincode_details("902100", "Los Angeles") is None
     assert await resolve_pincode_details("621999", "Trichy") is None
     known = await resolve_pincode_details("620018")
-    assert known["verified"] is False
+    assert known["verified"] is True
+    assert known["locality"] == "Thillai Nagar"
+    assert known["place"] == "Tiruchirappalli"
     reply = await generate_pincode_scoped_reply(
         await memory.get_session("u"), "u", "train status", memory
     )
@@ -430,3 +432,236 @@ async def test_opt_out_blocks_media_and_location_and_accepts_unsubscribe(
     whatsapp.download_media.assert_not_awaited()
     assert (await memory.get_session("u")).location is None
     assert whatsapp.send_text.await_count == 3
+
+
+@pytest.mark.parametrize(
+    "lang_input,expected_lang,pincode,expected_city,expected_locality,expected_station",
+    [
+        (
+            "lang_english",
+            "english",
+            "620018",
+            "Tiruchirappalli",
+            "Thillai Nagar",
+            "TPJ",
+        ),
+        (
+            "lang_tanglish",
+            "tanglish",
+            "600028",
+            "Chennai",
+            "R.A. Puram & Mandaveli",
+            "MS",
+        ),
+        (
+            "lang_tamil",
+            "tamil",
+            "641001",
+            "Coimbatore",
+            "Town Hall & R.S. Puram South",
+            "CBE",
+        ),
+        (
+            "English",
+            "english",
+            "10001",
+            "New York",
+            "Chelsea & Midtown South",
+            "NYP",
+        ),
+        ("English", "english", "SW1A 1AA", "London", "Westminster", "VIC"),
+    ],
+)
+async def test_global_pincode_onboarding_indian_and_international(
+    settings,
+    memory,
+    lang_input,
+    expected_lang,
+    pincode,
+    expected_city,
+    expected_locality,
+    expected_station,
+):
+    uid = f"user_{pincode}_{expected_lang}"
+    service = LLMOrchestrator(
+        settings,
+        memory,
+        AsyncMock(),
+        AsyncMock(),
+        BookingTool(settings, memory),
+        AsyncMock(),
+        LocalScoutTool(settings, AsyncMock()),
+        client=AsyncMock(),
+    )
+    # Step 0: Greeting prompts language
+    step0 = await service.handle_interactive_turn(uid, "Hi")
+    assert len(step0["buttons"]) == 3
+    # Step 1: Select language -> prompts global pincode
+    step1 = await service.handle_interactive_turn(uid, lang_input)
+    assert "Pincode" in step1["reply"] or "பின்கோடு" in step1["reply"]
+    # Strict gate: trying to ask for food before locking pincode re-prompts pincode
+    gated = await service.handle_interactive_turn(
+        uid, "Search a good food spot near me"
+    )
+    assert "Pincode" in gated["reply"] or "பின்கோடு" in gated["reply"]
+    assert (await memory.get_session(uid)).profile[
+        "onboarding_step"
+    ] == "awaiting_pincode"
+    # Step 2: Lock pincode
+    step2 = await service.handle_interactive_turn(uid, pincode)
+    assert pincode in step2["reply"]
+    assert expected_locality in step2["reply"]
+    session = await memory.get_session(uid)
+    assert session.profile["language"] == expected_lang
+    assert session.profile["pincode"] == pincode
+    assert session.profile["place"] == expected_city
+    assert session.profile["station_code"] == expected_station
+    assert session.profile["onboarding_step"] == "completed"
+    assert session.location is not None
+
+
+@pytest.mark.parametrize("lang_choice", ["lang_english", "lang_tanglish", "lang_tamil"])
+async def test_food_spot_near_me_returns_rich_in_chat_recommendations_never_deflects(
+    settings, memory, lang_choice
+):
+    settings.google_places_api_key = SecretStr("")
+    uid = f"food_{lang_choice}"
+    scout = LocalScoutTool(settings, AsyncMock())
+    service = LLMOrchestrator(
+        settings,
+        memory,
+        AsyncMock(),
+        AsyncMock(),
+        BookingTool(settings, memory),
+        AsyncMock(),
+        scout,
+        client=None,  # Even when LLM client is offline or tool is called, pincode-scoped Local Scout responds in-chat
+    )
+    await service.handle_interactive_turn(uid, "Hi")
+    await service.handle_interactive_turn(uid, lang_choice)
+    await service.handle_interactive_turn(uid, "620018")
+    res = await service.handle_interactive_turn(uid, "Search a good food spot near me")
+    reply = res["reply"]
+    assert "No live discovery provider is configured" not in reply
+    assert "check on the map yourself" not in reply.lower()
+    assert "Shri Sangeethas" in reply
+    assert "Banana Leaf" in reply
+    assert "Kannappa" in reply
+    assert "⭐" in reply
+    assert "https://www.google.com/maps/search/?api=1&query=" in reply
+
+
+async def test_five_modules_wired_tneb_medicine_transit_booking(settings, memory):
+    from services.tools.transit_tool import TransitTool
+
+    settings.google_places_api_key = SecretStr("")
+    scout = LocalScoutTool(settings, AsyncMock())
+    transit = TransitTool(settings, AsyncMock())
+    transit.search_bus_routes = AsyncMock(
+        return_value={"routes": [{"duration": "3000s"}]}
+    )
+    transit.search_flights = AsyncMock(return_value={"offers": [{"price": "3200"}]})
+    service = LLMOrchestrator(
+        settings,
+        memory,
+        AsyncMock(),
+        transit,
+        BookingTool(settings, memory),
+        AsyncMock(),
+        scout,
+        client=AsyncMock(),
+    )
+    await service.handle_interactive_turn("u5", "lang_english")
+    await service.handle_interactive_turn("u5", "620018")
+
+    tneb = await service.execute_tool(
+        "check_tneb_bill_status",
+        '{"units_consumed": 350, "consumer_number": "0612345678"}',
+        "u5",
+        False,
+    )
+    assert tneb["estimated_bi_monthly_charge_inr"] == 940.0
+    assert "Tiruchirappalli" in tneb["region"]
+
+    med = await service.execute_tool(
+        "find_generic_medicine", '{"medicine_name": "Dolo 650"}', "u5", False
+    )
+    assert med["match"]["generic_salt"] == "Paracetamol IP 650 mg"
+    assert "620018" in med["nearby_availability"]
+
+    places = await service.execute_tool(
+        "search_nearby_places",
+        '{"category": "restaurants", "radius": 3000}',
+        "u5",
+        False,
+    )
+    assert len(places["recommendations"]) >= 3
+
+    bf = await service.execute_tool(
+        "search_bus_and_flight_options",
+        '{"origin": "620018", "destination": "600028", "date": "2099-01-01"}',
+        "u5",
+        False,
+    )
+    assert "bus" in bf and "flight" in bf
+    transit.search_flights.assert_awaited_once_with("TRZ", "MAA", "2099-01-01")
+
+
+async def test_canada_postal_code_and_youtube_instagram_downloader(settings, memory):
+    settings.google_places_api_key = SecretStr("")
+    scout = LocalScoutTool(settings, AsyncMock())
+    service = LLMOrchestrator(
+        settings,
+        memory,
+        AsyncMock(),
+        AsyncMock(),
+        BookingTool(settings, memory),
+        AsyncMock(),
+        scout,
+        client=None,
+    )
+    welcome = await service.handle_interactive_turn("canada_uncle", "Hi")
+    assert "Welcome to *Thirdhand AI*" in welcome["reply"]
+    assert "Hindi" in welcome["reply"] and "Telugu" in welcome["reply"]
+    await service.handle_interactive_turn("canada_uncle", "English")
+    locked = await service.handle_interactive_turn("canada_uncle", "M5V 2T6")
+    assert "Toronto" in locked["reply"]
+    food = await service.handle_interactive_turn(
+        "canada_uncle", "Search a good food spot near me"
+    )
+    assert "Pai Northern Thai Kitchen" in food["reply"] or "Karaikudi" in food["reply"]
+
+    yt = await service.handle_interactive_turn(
+        "canada_uncle", "Download MP3 https://youtu.be/dQw4w9WgXcQ"
+    )
+    assert "YOUTUBE DOWNLOAD READY" in yt["reply"] and "MP3" in yt["reply"]
+
+    ig = await service.handle_interactive_turn(
+        "canada_uncle", "https://www.instagram.com/reel/C8abc123xyz/"
+    )
+    assert "Instagram" in ig["reply"] and "ddinstagram.com" in ig["reply"]
+
+    # Test 5-step interactive tap-button Movie Booking Wizard
+    s1 = await service.handle_interactive_turn("canada_uncle", "Book movie ticket")
+    assert len(s1["buttons"]) == 3
+    assert "Scotiabank" in s1["reply"]
+
+    s2 = await service.handle_interactive_turn("canada_uncle", "movie_th_1")
+    assert len(s2["buttons"]) == 3
+    assert "Coolie" in s2["reply"]
+
+    s3 = await service.handle_interactive_turn("canada_uncle", "movie_mv_1")
+    assert len(s3["buttons"]) == 3
+    assert "6:30 PM" in s3["reply"]
+
+    s4 = await service.handle_interactive_turn("canada_uncle", "movie_tm_1")
+    assert len(s4["buttons"]) == 3
+    assert "1 Seat" in s4["buttons"][0]["title"]
+
+    s5 = await service.handle_interactive_turn("canada_uncle", "movie_st_2")
+    assert len(s5["buttons"]) == 3
+    assert "G10, G11" in s5["reply"]
+
+    s6 = await service.handle_interactive_turn("canada_uncle", "movie_cf_prime")
+    assert "PRE-CHECKOUT PASS READY" in s6["reply"]
+    assert "G10, G11" in s6["reply"]

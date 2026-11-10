@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 
-async def extract_pdf(data: bytes) -> str:
+async def extract_pdf(data: bytes, max_pages: int = 30, max_chars: int = 3900) -> str:
     if len(data) > 8 * 1024 * 1024 or not data.startswith(b"%PDF-"):
         raise ValueError("Send a PDF up to 8 MB")
     worker = Path(__file__).with_name("pdf_worker.py")
@@ -13,6 +13,8 @@ async def extract_pdf(data: bytes) -> str:
         sys.executable,
         "-I",
         str(worker),
+        str(max_pages),
+        str(max_chars),
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
@@ -23,6 +25,6 @@ async def extract_pdf(data: bytes) -> str:
         if process.returncode is None:
             process.kill()
             await process.wait()
-    if process.returncode or len(output) > 20000:
+    if process.returncode or len(output) > max(20000, max_chars * 4):
         raise ValueError("Send an unlocked, readable PDF with up to 30 pages")
-    return output.decode("utf-8")[:3900]
+    return output.decode("utf-8")[:max_chars]

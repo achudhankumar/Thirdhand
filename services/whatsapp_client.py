@@ -44,11 +44,58 @@ class WhatsAppClient:
             return await self.outbound.send(recipient, payload, send)
         return await send()
 
+    async def send_typing_indicator(self, message_id: str) -> None:
+        """Mark incoming message as read (blue ticks) and trigger WhatsApp 3-dot typing indicator."""
+        token = self.settings.meta_access_token.get_secret_value().strip()
+        if not message_id or not token or token == "test-meta":
+            return
+        try:
+            resp = await self.client.post(
+                f"{self.base}/{self.settings.meta_phone_number_id}/messages",
+                headers={"Authorization": f"Bearer {token}"},
+                json={
+                    "messaging_product": "whatsapp",
+                    "status": "read",
+                    "message_id": message_id,
+                    "typing_indicator": {"type": "text"},
+                },
+                timeout=3.0,
+            )
+            if resp.status_code >= 400:
+                await self.client.post(
+                    f"{self.base}/{self.settings.meta_phone_number_id}/messages",
+                    headers={"Authorization": f"Bearer {token}"},
+                    json={
+                        "messaging_product": "whatsapp",
+                        "status": "read",
+                        "message_id": message_id,
+                    },
+                    timeout=3.0,
+                )
+        except Exception:
+            pass
+
     async def send_text(self, recipient: str, text: str) -> dict:
         if not text or len(text) > 4096:
             raise ValueError("WhatsApp text must contain 1 to 4096 characters")
         return await self._send(
             recipient, {"type": "text", "text": {"body": text, "preview_url": False}}
+        )
+
+    async def send_image(
+        self, recipient: str, image_url: str, caption: str = ""
+    ) -> dict:
+        if not image_url or not image_url.startswith(("http://", "https://")):
+            raise ValueError("image_url must be a valid HTTP/HTTPS URL")
+        image_payload: dict[str, str] = {"link": image_url}
+        if caption:
+            image_payload["caption"] = caption[:1024]
+        return await self._send(
+            recipient,
+            {
+                "type": "image",
+                "image": image_payload,
+            },
         )
 
     async def send_buttons(

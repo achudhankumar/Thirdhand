@@ -16,7 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from database.astra_db import AstraMemory
 from services.llm_orchestrator import LLMOrchestrator
 from services.tools.booking_tool import BookingTool
-from services.tools.local_tool import LocalTool
+from services.tools.local_scout_tool import LocalScoutTool
 from services.tools.shopping_tool import ShoppingTool
 from services.tools.transit_tool import TransitTool
 
@@ -72,7 +72,7 @@ async def initialize_simulator(settings, http):
         TransitTool(config, http),
         BookingTool(config, memory, allow_checkout=False),
         ShoppingTool(http),
-        LocalTool(config, http),
+        LocalScoutTool(config, http),
     )
 
 

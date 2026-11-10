@@ -3,7 +3,6 @@ import math
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlencode
 
 import httpx
 
@@ -43,31 +42,22 @@ def profile(row, source):
 def places(query, row, key=None):
     key = os.getenv("GOOGLE_MAPS_API_KEY") if key is None else key
     if not key:
-        result = f"No live discovery provider is configured for {row[0]}."
-        directories = {
-            "London": "BFI IMAX listings and tickets: https://www.bfi.org.uk/bfi-imax",
-            "Chennai": "Kamala Cinemas box office: https://www.kamalacinemas.com/Contact.html",
+        from services.tools.local_scout_tool import (
+            _build_curated_recommendations,
+            format_in_chat_places,
+        )
+
+        lat, lon = row[5], row[6]
+        prof = {
+            "place": row[0],
+            "locality": row[0],
+            "surrounding_areas": [row[0], row[2]],
         }
-        if row[0] in directories and any(
-            word in query.casefold() for word in ("cinema", "movie", "theatre", "படம்")
-        ):
-            result += "\n" + directories[row[0]] + "\nSeat inventory is unverified."
-        category = {"food": "restaurants", "cinema": "cinemas"}.get(
-            query.casefold(), query[:256]
-        )
-        if row[0] == "Madurai" and category in {"cinemas", "restaurants"}:
-            entries = {
-                "cinemas": "Vetri Cinemas · Maattuthavani, Melur Main Road\nhttps://vetricinemas.in/\nCheck the cinema website for current showtimes and seats.",
-                "restaurants": "Arumugam Mess · 43 Alagar Koil Road, Tallakulam\nhttps://www.arumugammess.com/\nChandran Mess · Madurai branches\nhttps://chandranmess.online/\nCheck with the restaurant for today's hours and ordering.",
-            }
-            result = f"Madurai {category}\n" + entries[category]
-        search = urlencode(
-            {"api": "1", "query": f"{category}, {row[0]}, {row[2]}, {row[1]}"}
-        )
-        return (
-            result
-            + "\nSearch Google Maps: https://www.google.com/maps/search/?"
-            + search
+        recs = _build_curated_recommendations(query, lat, lon, profile=prof)
+        return format_in_chat_places(
+            {"recommendations": recs, "locality": row[0]},
+            lang="english",
+            profile=prof,
         )
     lat, lon = row[5:]
     delta = 0.12 / max(0.2, math.cos(math.radians(lat)))

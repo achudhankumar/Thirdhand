@@ -166,6 +166,11 @@ async def test_whatsapp_payloads_and_media(settings):
             "Select",
             [{"title": "Now", "rows": [{"id": "one", "title": "Movie"}]}],
         )
+        await client.send_image(
+            "919876543210",
+            "https://example.com/moon.jpg",
+            "Moon photo",
+        )
         assert await client.download_media("123") == (media, "image/png")
         with pytest.raises(ValueError):
             await client.send_buttons(

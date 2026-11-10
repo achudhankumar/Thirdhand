@@ -7,6 +7,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from services.global_support.providers import CITY, pin_city, places, profile
+from services import resolve_pincode_details
 from services.global_support.regional import lookup
 from services.global_support.schedule import add_reminder
 from services.jobs import current_job
@@ -22,7 +23,6 @@ class GlobalFeatures:
         )
 
     async def location_pin(self, user_id, latitude, longitude):
-        # Coordinates are an explicit snapshot, never inferred from a number/postcode.
         row = pin_city(latitude, longitude)
 
         def change(p):
@@ -30,15 +30,57 @@ class GlobalFeatures:
                 p.pop(key, None)
             if row:
                 p["pending_city"] = row[0]
+                p["place"] = row[0]
+                p["onboarding_step"] = "completed"
 
         await self.memory.change_profile(user_id, change)
         return (
-            f"Your pin is near {row[0]}, {row[1]}. Reply yes to confirm or send your city."
+            f"📍 Location pin received near *{row[0]}, {row[1]}*. Reply *yes* to confirm or send your Pincode / Postal Code for exact neighborhood lock."
             if row
-            else "Location saved. I cannot verify the city for this pin; please supply your city."
+            else "📍 Location pin saved. Send your Pincode / Postal Code to lock your surrounding neighborhoods."
         )
 
     async def _discovery(self, text, loc):
+        if self.resume is not None:
+            # Delegate discovery, transit, booking & shopping to the 5-Module Super-Agent Orchestrator
+            lower_check = text.casefold()
+            if any(
+                w in lower_check
+                for w in (
+                    "cinema",
+                    "movie",
+                    "theatre",
+                    "food",
+                    "restaurant",
+                    "nearby",
+                    "pharmacy",
+                    "hospital",
+                    "spot",
+                    "cafe",
+                    "eat",
+                    "dinner",
+                    "lunch",
+                    "breakfast",
+                    "tneb",
+                    "bill",
+                    "medicine",
+                    "tablet",
+                    "train",
+                    "transit",
+                    "pnr",
+                    "bus",
+                    "flight",
+                    "shopping",
+                    "earbuds",
+                    "buy",
+                    "price",
+                    "ரயில்",
+                    "உணவு",
+                    "ஹோட்டல்",
+                )
+            ):
+                return None
+
         lower = text.casefold()
         if any(
             w in lower
@@ -53,7 +95,7 @@ class GlobalFeatures:
             )
         ):
             if any(w in lower for w in ("book", "order", "reserve", "ticket")):
-                return None  # Real modular booking/AI handles slots and confirmation.
+                return None
             query = (
                 "cinemas"
                 if lower in {"cinema", "movie", "theatre"}
@@ -61,10 +103,13 @@ class GlobalFeatures:
                 if lower in {"food", "restaurant"}
                 else text
             )
+            city_row = CITY.get(loc["city"].casefold())
+            if not city_row:
+                return None
             return await asyncio.to_thread(
                 places,
                 query,
-                CITY[loc["city"].casefold()],
+                city_row,
                 self.settings.google_places_api_key.get_secret_value(),
             )
         for operation, words in {
@@ -74,7 +119,7 @@ class GlobalFeatures:
         }.items():
             if any(w in lower for w in words):
                 if loc["country_iso"] == "IN" and operation != "weather":
-                    return None  # Preserve actual Indian rail/shopping/flight adapters.
+                    return None
                 return await asyncio.to_thread(
                     lookup,
                     operation,
@@ -130,6 +175,9 @@ class GlobalFeatures:
             "ஊர் மாற்று",
             "பின்கோடு மாற்று",
         }:
+            if self.resume is not None and key != "clear location":
+                # Let handle_onboarding_step prompt for the new Pincode in the user's language
+                return None
             await self.memory.clear_location(user_id)
 
             def clear(p):
@@ -137,16 +185,31 @@ class GlobalFeatures:
                     "global_location",
                     "place",
                     "pincode",
+                    "locality",
                     "surrounding_areas",
                     "station_code",
                     "pending_city",
                     "pending_request",
                 ):
                     p.pop(field, None)
-                p["onboarding_step"] = "awaiting_place"
+                p["onboarding_step"] = "awaiting_pincode"
 
             await self.memory.change_profile(user_id, clear)
-            return "Location cleared. Send a city or a location pin."
+            return "Location cleared. Send a Pincode / city or a location pin."
+
+        # When wired into LLMOrchestrator (self.resume is not None), enforce strict Language + Global Pincode onboarding gate first
+        if self.resume is not None and (
+            not p.get("language")
+            or p.get("onboarding_step")
+            in {None, "awaiting_language", "awaiting_pincode", "awaiting_place"}
+        ):
+            if (
+                key not in {"time", "calendar", "yes"}
+                and not key.startswith("remind ")
+                and not p.get("pending_city")
+            ):
+                return None
+
         loc = p.get("global_location")
         candidate = CITY.get(key.removeprefix("location ").removeprefix("place_"))
         if key == "yes" and p.get("pending_city"):
@@ -170,7 +233,6 @@ class GlobalFeatures:
                     p.pop(field, None)
 
             await self.memory.change_profile(user_id, set_city)
-            # City-level catalog coordinates are not a precise user location.
             if session.location is not None and not p.get("pending_city"):
                 await self.memory.clear_location(user_id)
             if pending:
@@ -182,7 +244,7 @@ class GlobalFeatures:
                 if self.resume is not None:
                     return await self.resume(user_id, pending)
             return f"Location set to {candidate[0]}, {candidate[1]}."
-        if loc:
+        if loc and self.resume is None:
             for name, row in CITY.items():
                 if row[0] != loc["city"] and re.search(
                     r"\b" + re.escape(name) + r"\b", key
@@ -235,6 +297,10 @@ class GlobalFeatures:
                 "scheduled:" + job.job_id,
             )
             return result
+        if self.resume is not None:
+            if loc:
+                return await self._discovery(text, loc)
+            return None
         relevant = any(
             w in key
             for w in (
@@ -258,7 +324,7 @@ class GlobalFeatures:
                 w in key for w in ("nearby", "pharmacy", "hospital", "local places")
             )
         ):
-            return None  # A real shared coordinate is sufficient for the modular Places tool.
+            return None
         if not loc and relevant:
             await self.memory.change_profile(
                 user_id, lambda p: p.update(pending_request=text)

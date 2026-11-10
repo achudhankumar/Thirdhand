@@ -52,7 +52,11 @@ class Settings(BaseSettings):
     openai_chat_model: str = "gpt-4o"
     openai_transcription_model: str = "whisper-1"
     gemini_api_key: SecretStr = SecretStr("")
-    gemini_chat_model: str = "gemini-2.5-flash"
+    # Live web search (current movies, prices, facts). Tavily free tier: 1,000 searches/month.
+    tavily_api_key: SecretStr = SecretStr("")
+    # Hugging Face token for FLUX.1 image generation (free account token).
+    hf_token: SecretStr = SecretStr("")
+    gemini_chat_model: str = "gemini-3.5-flash-lite"
 
     meta_access_token: SecretStr = SecretStr("")
     whatsapp_token: SecretStr = SecretStr("")

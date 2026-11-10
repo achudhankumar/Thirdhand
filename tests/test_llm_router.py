@@ -11,7 +11,7 @@ from openai import AsyncOpenAI
 
 from services.llm_orchestrator import LLMOrchestrator, normalize_audio, tool_schemas
 from services.tools.booking_tool import BookingTool
-from services.tools.local_tool import LocalTool
+from services.tools.local_scout_tool import LocalScoutTool
 from services.tools.shopping_tool import ShoppingTool
 from services.tools.transit_tool import TransitTool
 
@@ -83,7 +83,7 @@ async def brain(settings, memory):
             transit,
             BookingTool(settings, memory),
             ShoppingTool(http),
-            LocalTool(settings, http),
+            LocalScoutTool(settings, http),
             api,
         )
         yield service, seen
@@ -203,7 +203,50 @@ async def test_whisper_and_vision_real_sdk(settings, memory):
 
 def test_tool_schema_contract():
     tools = tool_schemas()
-    assert len(tools) == 8
+    assert len(tools) == 14
+    assert any(t["function"]["name"] == "generate_ai_image" for t in tools)
     assert all(
         t["function"]["parameters"]["additionalProperties"] is False for t in tools
     )
+
+
+async def test_create_moon_image_fast_track(brain, memory):
+    service, _ = brain
+    await memory.update_profile(
+        "919876543210",
+        {"language": "english", "pincode": "620018", "onboarding_step": "completed"},
+    )
+    res = await service.handle_interactive_turn("919876543210", "create a moon image")
+    assert "image_url" in res
+    assert res["image_url"].startswith("http")
+    assert "moon" in res["reply"].lower()
+    assert len(res["buttons"]) >= 2
+
+def test_dynamic_script_detection():
+    from services.llm_orchestrator import detect_user_input_mode
+
+    # Tamil script vs Tanglish
+    t_script = detect_user_input_mode("வணக்கம் நல்ல உணவு எங்கு கிடைக்கும்?", "tamil")
+    assert t_script["script_mode"] == "tamil_native"
+
+    t_tanglish = detect_user_input_mode("Trichy-la best food spots sollu", "tamil")
+    assert t_tanglish["script_mode"] == "tanglish"
+    assert "Tanglish" in t_tanglish["instruction"]
+
+    # Malayalam script vs Manglish
+    m_script = detect_user_input_mode("നല്ല ഭക്ഷണശാലകൾ എവിടെയാണ്?", "malayalam")
+    assert m_script["script_mode"] == "malayalam_native"
+
+    m_manglish = detect_user_input_mode("Kochi-yil nalla food spots undo?", "malayalam")
+    assert m_manglish["script_mode"] == "manglish"
+
+
+async def test_image_generation_flux_styles():
+    from services.tools.diagram_tool import VisualDiagramTool
+
+    tool = VisualDiagramTool()
+    res = await tool.generate_ai_art_image("cute cat anime wallpaper")
+    assert res["success"] is True
+    assert "image_url" in res
+    assert res["image_url"].startswith("http")
+

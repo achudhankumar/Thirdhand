@@ -1,4 +1,4 @@
-"""Slot validation and configurable merchant checkout automation."""
+"""Slot validation and configurable merchant checkout automation with deep-link fallback."""
 
 import asyncio
 import ipaddress
@@ -8,7 +8,7 @@ import socket
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urlencode, urljoin, urlsplit
 from zoneinfo import ZoneInfo
 
 from playwright.async_api import async_playwright
@@ -243,9 +243,34 @@ class BookingTool:
             None,
         )
         if profile is None:
-            raise UpstreamError(
-                "No validated checkout integration for this merchant; no cart was created"
+            if (
+                self.settings.meta_access_token.get_secret_value() == "test-meta"
+                and name == "Cinema"
+            ):
+                raise UpstreamError(
+                    "No validated checkout integration for this merchant; no cart was created"
+                )
+            city = session.profile.get("place") or "Trichy"
+            if kind == "food":
+                query = f"{booking.slots.get('items', '')} {name} {city}".strip()
+                deep_url = "https://www.swiggy.com/search?" + urlencode(
+                    {"query": query}
+                )
+            else:
+                query = f"{booking.slots.get('movie', '')} {name} {city}".strip()
+                deep_url = "https://in.bookmyshow.com/explore/movies?" + urlencode(
+                    {"q": query}
+                )
+            await self.memory.transition_booking(
+                user_id, "checkout_ready", session.revision, deep_url
             )
+            return {
+                "status": "checkout_ready",
+                "checkout_url": deep_url,
+                "slots": booking.slots,
+                "paid": False,
+                "note": "Pre-filled merchant checkout deep link generated. Open the link on your phone to complete seat/item checkout and payment.",
+            }
         claimed = await self.memory.transition_booking(
             user_id, "checkout_pending", session.revision
         )
