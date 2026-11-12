@@ -922,7 +922,17 @@ async def handle_onboarding_step(
     if not profile.get("language"):
         language = detect_language_choice(text)
         if not language:
-            return _prompt_language()
+            import re
+            is_greeting = lower in {"hi", "hii", "hiii", "hello", "hey", "vanakkam", "start", "/start", "வணக்கம்", "menu"}
+            if not is_greeting and len(text.strip().split()) >= 2:
+                if re.search(r"[஀-௿]", text):
+                    language = "tamil"
+                elif any(w in lower for w in ("sollu", "pannu", "enga", "irukku", "kedaikum", "venum", "bro", "machan")):
+                    language = "tanglish"
+                else:
+                    language = "english"
+            else:
+                return _prompt_language()
         has_location = (
             (session.location is not None)
             or bool(profile.get("global_location"))

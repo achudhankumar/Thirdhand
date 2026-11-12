@@ -29,6 +29,7 @@ from services.tools.booking_tool import BookingUncertain
 from services.tools.local_scout_tool import LocalScoutTool
 from services.tools.media_dl_tool import MediaDownloadTool, extract_media_url_info
 from services.tools.movie_wizard import handle_movie_wizard_step
+from services.tools.contact_messaging_agent import ContactMessagingAgent
 from services.audit_logger import (
     generate_diagnostic_report,
     is_awaiting_feedback,
@@ -562,40 +563,55 @@ class LLMOrchestrator:
             and isinstance(self.client, AsyncOpenAI)
         ):
             audio = await normalize_audio(data)
-            model_name = getattr(
+            preferred_model = getattr(
                 self.settings, "gemini_chat_model", "gemini-3.5-flash-lite"
             )
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
-            async with httpx.AsyncClient(timeout=30.0) as http:
-                resp = await http.post(
-                    url,
-                    params={"key": gemini_key},
-                    json={
-                        "contents": [
-                            {
-                                "parts": [
+            candidate_models = [
+                preferred_model,
+                "gemini-2.5-flash",
+                "gemini-2.0-flash",
+                "gemini-1.5-flash",
+            ]
+            seen_models = set()
+            models_to_try = [m for m in candidate_models if not (m in seen_models or seen_models.add(m))]
+
+            for model_name in models_to_try:
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
+                try:
+                    async with httpx.AsyncClient(timeout=25.0) as http:
+                        resp = await http.post(
+                            url,
+                            params={"key": gemini_key},
+                            json={
+                                "contents": [
                                     {
-                                        "text": "Transcribe this Tamil, Tanglish, or English voice note verbatim. Output only the spoken transcript."
-                                    },
-                                    {
-                                        "inline_data": {
-                                            "mime_type": "audio/wav",
-                                            "data": base64.b64encode(audio).decode(),
-                                        }
-                                    },
+                                        "parts": [
+                                            {
+                                                "text": "Transcribe this Tamil, Tanglish, or English voice note verbatim. Output only the spoken transcript without commentary."
+                                            },
+                                            {
+                                                "inline_data": {
+                                                    "mime_type": "audio/wav",
+                                                    "data": base64.b64encode(audio).decode(),
+                                                }
+                                            },
+                                        ]
+                                    }
                                 ]
-                            }
-                        ]
-                    },
-                )
-                resp.raise_for_status()
-                candidates = resp.json().get("candidates") or []
-                if candidates:
-                    parts = (candidates[0].get("content") or {}).get("parts") or []
-                    transcript = "".join(p.get("text", "") for p in parts).strip()
-                    if transcript:
-                        return transcript[:8000]
-            raise ValueError("No speech could be transcribed")
+                            },
+                        )
+                        if resp.status_code == 200:
+                            candidates = resp.json().get("candidates") or []
+                            if candidates:
+                                parts = (candidates[0].get("content") or {}).get("parts") or []
+                                transcript = "".join(p.get("text", "") for p in parts).strip()
+                                if transcript:
+                                    return transcript[:8000]
+                except Exception as ex:
+                    logger.warning("Transcription attempt on %s failed: %s", model_name, ex)
+                    continue
+
+            raise ValueError("No speech could be transcribed from audio")
         raise UpstreamError(
             "Voice transcription requires an OpenAI transcription credential"
         )
@@ -932,11 +948,20 @@ class LLMOrchestrator:
                             text += "\nUser caption: " + caption[:1000]
                 text = text[:8000]
             except Exception as exc:
-                logger.warning("Media processing unavailable (%s)", type(exc).__name__)
-                await self.whatsapp.send_text(
-                    user_id,
-                    "Media processing is unavailable or the file is unsupported. No extraction is confirmed.",
-                )
+                logger.warning("Media processing failed (%s: %s)", type(exc).__name__, exc)
+                user_session = await self.memory.get_session(user_id)
+                user_lang = str(user_session.profile.get("language") or "english").lower()
+                if user_lang in {"tamil", "tanglish"}:
+                    err_msg = (
+                        "🎙️ *மன்னிக்கவும் ப்ரோ! வாய்ஸ் நோட்டை சரியாகக் கேட்க முடியவில்லை.*\n\n"
+                        "சற்று தெளிவான குரலில் மீண்டும் வாய்ஸ் மெசேஜ் அனுப்பவும் அல்லது டெக்ஸ்ட்டாக டைப் செய்து அனுப்பவும்."
+                    )
+                else:
+                    err_msg = (
+                        "🎙️ *Sorry! Could not transcribe the voice note clearly.*\n\n"
+                        "Please re-send your voice note or send your query as a text message."
+                    )
+                await self.whatsapp.send_text(user_id, err_msg)
                 return
             if kind == "document":
                 session = await self.memory.get_session(user_id)
@@ -1252,6 +1277,54 @@ class LLMOrchestrator:
                 "profile": (await self.memory.get_session(user_id)).profile,
             }
         session = await self.memory.get_session(user_id)
+        user_lang = str(session.profile.get("language") or "english").lower()
+
+        # Check pending contact action if user provided a phone number
+        import re
+        phone_match = re.search(r"\b(?:(?:\+?91)?[6-9]\d{9})\b", text)
+        if session.profile.get("pending_contact_action") and phone_match:
+            pending = session.profile.pop("pending_contact_action")
+            target_phone = phone_match.group(0).replace("+", "")
+            if len(target_phone) == 10:
+                target_phone = f"91{target_phone}"
+            if "contacts" not in session.profile:
+                session.profile["contacts"] = {}
+            session.profile["contacts"][pending["name"].casefold()] = target_phone
+            await self.memory.update_profile(user_id, session.profile)
+            
+            contact_res = await ContactMessagingAgent.process_contact_request(
+                user_id=user_id,
+                query=f"{pending['action']} to {pending['name']} {pending.get('msg_body', '')} {target_phone}",
+                session_profile=session.profile,
+                whatsapp_client=self.whatsapp,
+                user_lang=user_lang,
+            )
+            await self.memory.append_message(user_id, "user", text)
+            await self.memory.append_message(user_id, "assistant", contact_res["reply"][:4000])
+            return {
+                "reply": contact_res["reply"],
+                "buttons": contact_res.get("buttons", []),
+                "profile": session.profile,
+            }
+
+        # Check contact messaging / call intent
+        if ContactMessagingAgent.is_contact_intent(text):
+            contact_res = await ContactMessagingAgent.process_contact_request(
+                user_id=user_id,
+                query=text,
+                session_profile=session.profile,
+                whatsapp_client=self.whatsapp,
+                user_lang=user_lang,
+            )
+            await self.memory.update_profile(user_id, contact_res.get("profile", session.profile))
+            await self.memory.append_message(user_id, "user", text)
+            await self.memory.append_message(user_id, "assistant", contact_res["reply"][:4000])
+            return {
+                "reply": contact_res["reply"],
+                "buttons": contact_res.get("buttons", []),
+                "profile": session.profile,
+            }
+
         step = await handle_onboarding_step(
             session,
             user_id,
@@ -1601,10 +1674,7 @@ class LLMOrchestrator:
                     await self.memory.append_message(user_id, "assistant", reply_text[:4000])
                     return {
                         "reply": reply_text[:4000],
-                        "buttons": [
-                            {"id": "survey_pos", "title": "👍 Yes / பயனுள்ளது"},
-                            {"id": "survey_neg", "title": "👎 No / இல்லை"},
-                        ],
+                        "buttons": [],
                         "profile": session.profile,
                     }
             except Exception as exc:
@@ -1778,9 +1848,6 @@ class LLMOrchestrator:
             await self.memory.append_message(user_id, "assistant", answer)
         return {
             "reply": answer,
-            "buttons": [
-                {"id": "survey_pos", "title": "👍 Yes / பயனுள்ளது"},
-                {"id": "survey_neg", "title": "👎 No / இல்லை"},
-            ],
+            "buttons": [],
             "profile": (await self.memory.get_session(user_id)).profile,
         }
