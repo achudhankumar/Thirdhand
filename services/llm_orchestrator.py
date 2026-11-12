@@ -1295,6 +1295,82 @@ class LLMOrchestrator:
                 "profile": (await self.memory.get_session(user_id)).profile,
             }
 
+        # Universal Autonomous E-Commerce & Platform Handshake (Blinkit, Amazon, Swiggy, Flipkart, etc.)
+        from services.tools.autonomous_commerce_agent import AutonomousCommerceAgent
+        from services.tools.platform_auth_manager import PlatformAuthManager
+
+        # Handle Mock Demo Authentication action for instant testing
+        if command.startswith("auth_mock_demo_"):
+            target_platform = command.replace("auth_mock_demo_", "").strip()
+            PlatformAuthManager.save_session(
+                user_id=user_id,
+                platform_id=target_platform,
+                account_name="Primary Customer (+91 93841 46157)",
+                phone="919384146157",
+            )
+            plat_meta = PlatformAuthManager.identify_platform(target_platform)
+            plat_name = plat_meta.get("name", target_platform.title())
+            icon = plat_meta.get("icon", "🛒")
+            ack_msg = (
+                f"{icon} *{plat_name} கணக்கு வெற்றிகரமாக இணைக்கப்பட்டது! (Connected)* ✅\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"👤 *Account:* Primary Customer (+91 93841 46157)\n"
+                f"🔐 *Status:* Active & Authenticated\n\n"
+                f"இப்போது நீங்கள் என்ன பொருள் வாங்க வேண்டும் என்று சொன்னாலும், "
+                f"AI தானாக பின்னணியில் உங்கள் {plat_name} கார்ட்டில் சேர்த்துவிடும்!"
+                if user_lang in {"tamil", "tanglish"}
+                else f"{icon} *{plat_name} Connected Successfully!* ✅\n"
+                     f"Your account is now authenticated. Send any order instruction and AI will manage your cart autonomously!"
+            )
+            await self.memory.append_message(user_id, "user", text)
+            await self.memory.append_message(user_id, "assistant", ack_msg)
+            return {
+                "reply": ack_msg,
+                "buttons": [
+                    {"id": f"Order milk on {target_platform}", "title": f"🥛 Order Milk"[:20]},
+                    {"id": f"Order bread on {target_platform}", "title": f"🍞 Order Bread"[:20]},
+                    {"id": "btn_clear_chat", "title": "🧹 Clear Chat"},
+                ],
+                "profile": (await self.memory.get_session(user_id)).profile,
+            }
+
+        # Check for Explicit Platform Shopping Intent
+        is_commerce_request = any(
+            w in command
+            for w in (
+                "blinkit",
+                "swiggy",
+                "zomato",
+                "myntra",
+                "meesho",
+                "walmart",
+                "ubereats",
+                "கார்ட்",
+                "cart",
+                "order milk",
+                "order bread",
+                "பால் ஆர்டர்",
+                "மளிகை ஆர்டர்",
+            )
+        )
+
+        if is_commerce_request and not command.startswith(("movie_", "auth_")):
+            comm_agent = AutonomousCommerceAgent()
+            user_iso = session.profile.get("global_location", {}).get("country_code", "IN")
+            commerce_res = await comm_agent.process_order_request(
+                user_id=user_id,
+                query=text,
+                user_region=user_iso,
+                user_lang=user_lang,
+            )
+            await self.memory.append_message(user_id, "user", text)
+            await self.memory.append_message(user_id, "assistant", commerce_res["reply"])
+            return {
+                "reply": commerce_res["reply"],
+                "buttons": commerce_res.get("buttons", []),
+                "profile": (await self.memory.get_session(user_id)).profile,
+            }
+
         # Zepto / Quick-Commerce Family Cart & Guardian Approval Workflow
         from services.tools.zepto_tool import (
             parse_zepto_cart_items,
