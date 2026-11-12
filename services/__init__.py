@@ -848,7 +848,7 @@ def _prompt_pincode(lang: str) -> dict[str, Any]:
     buttons = [
         {"id": "620018", "title": "📍 Trichy (620018)"},
         {"id": "600028", "title": "📍 Chennai (600028)"},
-        {"id": "641001", "title": "📍 Coimbatore (641001)"},
+        {"id": "641001", "title": "📍 Kovai (641001)"},
     ]
     return {"text": body, "buttons": buttons, "stage": "onboarding_pincode"}
 
@@ -869,6 +869,16 @@ async def handle_onboarding_step(
         "menu",
         "/menu",
         "delete my data",
+        "clear",
+        "clear chat",
+        "clearchat",
+        "/clear",
+        "கிளியர்",
+        "சாட் கிளியர்",
+        "சாட்டை அழி",
+        "சுத்தம் செய்",
+        "clear_chat",
+        "btn_clear_chat",
     }:
         return None
 

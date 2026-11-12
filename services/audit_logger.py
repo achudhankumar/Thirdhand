@@ -90,6 +90,10 @@ def is_awaiting_feedback(user_id: str) -> bool:
     return str(user_id) in data.get("awaiting_feedback", {})
 
 
+def clear_awaiting_feedback(user_id: str) -> None:
+    set_awaiting_feedback(user_id, False)
+
+
 def record_survey(user_id: str, satisfied: bool) -> dict:
     data = _load_data()
     now_iso = datetime.now(timezone.utc).isoformat()

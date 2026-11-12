@@ -995,7 +995,7 @@ class LLMOrchestrator:
                         )
                         return
             if result.get("buttons"):
-                await self.whatsapp.send_buttons(
+                await self._safe_send_buttons(
                     user_id, "👇 Choose your next action below:", result["buttons"][:3]
                 )
             return
@@ -1013,37 +1013,99 @@ class LLMOrchestrator:
             if is_survey:
                 await self.whatsapp.send_text(user_id, result["reply"][:4000])
                 if hasattr(self.whatsapp, "send_buttons"):
-                    try:
-                        await self.whatsapp.send_buttons(
-                            user_id,
-                            "✨ Indha thagaval ungalukku thirupthiyaaga irundhadhaa?",
-                            result["buttons"][:3],
-                        )
-                    except Exception as exc:
-                        logger.warning("Could not send survey buttons: %s", exc)
+                    await self._safe_send_buttons(
+                        user_id,
+                        "✨ Indha thagaval ungalukku thirupthiyaaga irundhadhaa?",
+                        result["buttons"][:3],
+                    )
             elif len(result["reply"]) > 1000:
                 await self.whatsapp.send_text(user_id, result["reply"][:4000])
-                await self.whatsapp.send_buttons(
+                await self._safe_send_buttons(
                     user_id,
                     "👇 Choose your next action below:",
                     result["buttons"][:3],
                 )
             else:
-                await self.whatsapp.send_buttons(
+                await self._safe_send_buttons(
                     user_id, result["reply"][:1024], result["buttons"][:3]
                 )
         else:
             await self.whatsapp.send_text(user_id, result["reply"][:4000])
+
+    async def _safe_send_buttons(
+        self, user_id: str, body: str, buttons: list[dict]
+    ) -> None:
+        safe_btns = []
+        seen = set()
+        for b in (buttons or [])[:3]:
+            bid = str(b.get("id", ""))[:256]
+            btitle = str(b.get("title", ""))[:20].strip() or "Option"
+            if not bid:
+                bid = btitle
+            if bid in seen:
+                bid = f"{bid}_{len(seen)}"
+            seen.add(bid)
+            safe_btns.append({"id": bid, "title": btitle})
+
+        if not safe_btns:
+            await self.whatsapp.send_text(user_id, body[:4000])
+            return
+
+        body_clamped = body[:1024]
+        try:
+            await self.whatsapp.send_buttons(user_id, body_clamped, safe_btns)
+        except (SendPolicyError, asyncio.CancelledError):
+            raise
+        except Exception as exc:
+            logger.warning("send_buttons failed (%s); falling back to send_text", exc)
+            fallback = f"{body}\n\n" + "\n".join(
+                f"{i+1}. {b['title']}" for i, b in enumerate(safe_btns)
+            )
+            await self.whatsapp.send_text(user_id, fallback[:4000])
 
     async def handle_interactive_turn(self, user_id: str, text: str) -> dict:
         if not isinstance(text, str) or not 1 <= len(text.strip()) <= 8000:
             raise ValueError("Message must contain 1 to 8000 characters")
         text = text.strip()
         command = text.casefold()
+
+        # 0. Clear Chat / Full Reset Command (Fresh start for all users & test cases)
         if command in {
+            "clear",
+            "clear chat",
+            "clearchat",
+            "/clear",
             "reset",
             "/reset",
             "delete my data",
+            "கிளியர்",
+            "சாட் கிளியர்",
+            "சாட்டை அழி",
+            "சுத்தம் செய்",
+            "clear_chat",
+            "btn_clear_chat",
+        }:
+            if self.global_features.inbox is not None:
+                await self.global_features.inbox.cancel_reminders(user_id)
+            await self.memory.delete_session(user_id)
+            from services.audit_logger import clear_awaiting_feedback
+            clear_awaiting_feedback(user_id)
+            reset_msg = (
+                "🧹 *சாட் & நினைவகம் முழுமையாக அழிக்கப்பட்டது! (Chat Cleared & Reset)* ✨\n\n"
+                "வணக்கம்! Thirdhand AI புதிய உரையாடலுக்கு தயாராக உள்ளது.\n\n"
+                "உங்கள் விருப்ப மொழியைத் தேர்ந்தெடுக்கவும் (Choose Language):"
+            )
+            return {
+                "reply": reset_msg,
+                "buttons": [
+                    {"id": "lang_tamil", "title": "தமிழ் (Tamil)"},
+                    {"id": "lang_english", "title": "English"},
+                    {"id": "lang_tanglish", "title": "Tanglish"},
+                ],
+                "profile": {},
+            }
+
+        if command in {
             "cancel",
             "stop",
             "/stop",

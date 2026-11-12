@@ -107,7 +107,7 @@ def format_zepto_approval_card(items: list[dict[str, Any]], profile: dict[str, A
         )
 
     buttons = [
-        {"id": "approve_zepto_order", "title": "✅ Approve & Place Order"},
+        {"id": "approve_zepto_order", "title": "✅ Place Order"},
         {"id": "reject_zepto_order", "title": "❌ Decline Order"},
         {"id": "open_zepto_cart", "title": "🛒 View on Zepto"},
     ]

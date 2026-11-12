@@ -90,7 +90,7 @@ async def run_worker(app: FastAPI, stop: asyncio.Event) -> None:
                 error = "lease_renewal_failed"
             except Exception as exc:
                 error = type(exc).__name__
-                logger.error("Message processing failed (%s)", error)
+                logger.error("Message processing failed (%s)", error, exc_info=True)
             finally:
                 handler.cancel()
                 heartbeat.cancel()

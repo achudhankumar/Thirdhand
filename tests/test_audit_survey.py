@@ -213,3 +213,57 @@ async def test_reverse_scout_hidden_gems(settings, memory):
     )
     res = await orchestrator.handle_interactive_turn(user_id, "hidden spot near me")
     assert "Mani Mess" in res["reply"] or "Green Courtyard" in res["reply"] or "food spots" in res["reply"]
+
+
+@pytest.mark.asyncio
+async def test_clear_chat_and_reset(settings, memory):
+    user_id = "test_user_clear"
+    await memory.update_profile(user_id, {"place": "trichy", "language": "tamil", "onboarding_step": "completed"})
+    await memory.append_message(user_id, "user", "Hello earlier message")
+    orchestrator = LLMOrchestrator(
+        settings=settings,
+        memory=memory,
+        whatsapp=MagicMock(),
+        transit=MagicMock(),
+        booking=MagicMock(),
+        shopping=MagicMock(),
+        local=MagicMock(),
+    )
+    # Trigger Clear Chat command in English and Tamil
+    res_en = await orchestrator.handle_interactive_turn(user_id, "clear chat")
+    assert "அழிக்கப்பட்டது" in res_en["reply"] or "Cleared" in res_en["reply"]
+    assert any(b["id"] == "lang_tamil" for b in res_en["buttons"])
+
+    # Verify session profile was cleared
+    session = await memory.get_session(user_id)
+    assert session.profile == {}
+
+    # Trigger Clear Chat in Tamil
+    await memory.update_profile(user_id, {"pincode": "600028"})
+    res_ta = await orchestrator.handle_interactive_turn(user_id, "கிளியர்")
+    assert "அழிக்கப்பட்டது" in res_ta["reply"]
+    session_after = await memory.get_session(user_id)
+    assert session_after.profile == {}
+
+
+@pytest.mark.asyncio
+async def test_safe_send_buttons_clamping(settings, memory):
+    mock_whatsapp = AsyncMock()
+    orchestrator = LLMOrchestrator(
+        settings=settings,
+        memory=memory,
+        whatsapp=mock_whatsapp,
+        transit=MagicMock(),
+        booking=MagicMock(),
+        shopping=MagicMock(),
+        local=MagicMock(),
+    )
+    # Pass a button with title > 20 characters
+    long_buttons = [
+        {"id": "b1", "title": "This title is way longer than twenty characters for sure"}
+    ]
+    await orchestrator._safe_send_buttons("test_user_btn", "Choose option", long_buttons)
+    mock_whatsapp.send_buttons.assert_called_once()
+    called_btns = mock_whatsapp.send_buttons.call_args[0][2]
+    assert len(called_btns) == 1
+    assert len(called_btns[0]["title"]) <= 20
