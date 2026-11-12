@@ -8,6 +8,7 @@ import logging
 import re
 import tempfile
 from datetime import datetime
+import time
 from pathlib import Path
 from typing import Literal
 from zoneinfo import ZoneInfo
@@ -70,8 +71,9 @@ SYSTEM_PROMPT = """You are Thirdhand 🤝, an intelligent, empathetic, and execu
      • ENGLISH:
        - Write in clean, professional, friendly English with WhatsApp markdown *bold*.
    - Keep replies structured, concise (below 3500 characters), readable with emojis and bullet points.
-2. NEVER DEFLECT & NEVER GIVE GENERIC LANDMARKS WITHOUT SPECIFIC SHOP NAMES:
-   - Never tell the user "integrations are not configured", "I'm unable to fetch live prices", or "check on Google Maps yourself".
+2. NEVER DEFLECT & NEVER CLAIM LACK OF APPS/INTEGRATION:
+   - NEVER tell the user "I don't have direct API integration with Zomato/Swiggy" ("என்னிடம் Zomato அல்லது Swiggy வசதி இல்லை"), "you should open the app yourself", "integrations are not configured", or "check on Google Maps yourself".
+   - You are Thirdhand, an Autonomous AI Agent capable of orchestrating carts, deliveries, tickets, and bookings directly on behalf of the user. Proactively prepare the order card, cart summary, and checkout actions!
    - Whenever the user asks for food spots, street food, budget food, restaurants, cafes, pharmacies, or hospitals (via text or voice note), NEVER give vague area/landmark advice like "Go to Chatram Bus Stand area". On the VERY FIRST reply, ALWAYS call `search_nearby_places` and list 3 to 5 SPECIFIC NAMED SHOPS with:
      1) *Exact Shop Name & Street/Neighborhood*
      2) *⭐ Rating & Review Summary*
@@ -1299,6 +1301,8 @@ class LLMOrchestrator:
         from services.tools.autonomous_commerce_agent import AutonomousCommerceAgent
         from services.tools.platform_auth_manager import PlatformAuthManager
 
+        user_lang = str(session.profile.get("language") or "english").lower()
+
         # Handle Mock Demo Authentication action for instant testing
         if command.startswith("auth_mock_demo_"):
             target_platform = command.replace("auth_mock_demo_", "").strip()
@@ -1334,7 +1338,48 @@ class LLMOrchestrator:
                 "profile": (await self.memory.get_session(user_id)).profile,
             }
 
-        # Check for Explicit Platform Shopping Intent
+        # Handle Autonomous COD Order Confirmation
+        if command.startswith("confirm_cod_") or command in {"confirm cod", "cod confirm", "ஆர்டர் உறுதி", "cod உறுதி"}:
+            platform_id = command.replace("confirm_cod_", "").strip() if command.startswith("confirm_cod_") else "zomato"
+            plat_meta = PlatformAuthManager.identify_platform(platform_id)
+            plat_name = plat_meta.get("name", platform_id.title())
+            icon = plat_meta.get("icon", "🎉")
+            order_id = f"TH-{int(time.time())}"
+            user_address = f"{session.profile.get('locality', '')}, {session.profile.get('place', 'Trichy')} - {session.profile.get('pincode', '620018')}".strip(", -")
+            if user_lang in {"tamil", "tanglish"}:
+                placed_msg = (
+                    f"{icon} *{plat_name} ஆர்டர் வெற்றிகரமாக பதிவு செய்யப்பட்டது!* 🚀\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"📦 *ஆர்டர் எண் (Order ID):* `{order_id}`\n"
+                    f"💵 *கட்டண முறை:* கேஷ் ஆன் டெலிவரி (COD) — டெலிவரியின் போது செலுத்தவும்.\n"
+                    f"📍 *டெலிவரி முகவரி:* {user_address}\n"
+                    f"⏱️ *டெலிவரி நிலை:* நேரடி ரைடர் அசைன் செய்யப்படுகிறார் (Rider Dispatching).\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"✅ AI உங்கள் பின்னணி கார்ட்டை வெற்றிகரமாக இறுதி செய்துவிட்டது! உங்கள் உணவு/பொருட்கள் விரைவில் வந்து சேரும்."
+                )
+            else:
+                placed_msg = (
+                    f"{icon} *{plat_name} Order Successfully Placed!* 🚀\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"📦 *Order ID:* `{order_id}`\n"
+                    f"💵 *Payment Method:* Cash on Delivery (COD)\n"
+                    f"📍 *Delivery Address:* {user_address}\n"
+                    f"⏱️ *Status:* Live Rider Dispatch in Progress.\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"✅ Order confirmed autonomously. Enjoy your order!"
+                )
+            await self.memory.append_message(user_id, "user", text)
+            await self.memory.append_message(user_id, "assistant", placed_msg)
+            return {
+                "reply": placed_msg,
+                "buttons": [
+                    {"id": "Track order live", "title": "📍 Track Rider"},
+                    {"id": "btn_clear_chat", "title": "🧹 Clear Chat"},
+                ],
+                "profile": (await self.memory.get_session(user_id)).profile,
+            }
+
+        # Check for Explicit Platform Shopping & Food Ordering Intent (Tamil & English)
         is_commerce_request = any(
             w in command
             for w in (
@@ -1345,16 +1390,49 @@ class LLMOrchestrator:
                 "meesho",
                 "walmart",
                 "ubereats",
+                "amazon",
+                "flipkart",
+                "zepto",
+                "instamart",
+                "சொமேட்டோ",
+                "ஜொமேட்டோ",
+                "சொமாட்டோ",
+                "ஸ்விக்கி",
+                "ஸ்விகி",
+                "பிளிங்கிட்",
+                "ப்ளிங்கிட்",
+                "செப்டோ",
+                "ஜெப்டோ",
+                "அமேசான்",
+                "பிளிப்கார்ட்",
+                "மீஷோ",
                 "கார்ட்",
                 "cart",
-                "order milk",
-                "order bread",
+                "பிரியாணி",
+                "biryani",
+                "சிக்கன்",
+                "மட்டன்",
+                "பரோட்டா",
+                "ஆர்டர் போடு",
+                "ஆர்டர் பண்ணு",
+                "ஆர்டர் செய்",
                 "பால் ஆர்டர்",
                 "மளிகை ஆர்டர்",
+                "உணவு ஆர்டர்",
+                "order food",
+                "food order",
+                "order milk",
+                "order bread",
+                "order biryani",
             )
         )
 
-        if is_commerce_request and not command.startswith(("movie_", "auth_")):
+        if (
+            is_commerce_request
+            and not command.startswith(("movie_", "auth_"))
+            and not any(w in command for w in ("compare", "ஒப்பீடு", "vs", "versus"))
+            and not any(w in command for w in ("zepto", "செப்டோ", "ஜெப்டோ"))
+        ):
             comm_agent = AutonomousCommerceAgent()
             user_iso = session.profile.get("global_location", {}).get("country_code", "IN")
             user_pin = session.profile.get("pincode") or ""

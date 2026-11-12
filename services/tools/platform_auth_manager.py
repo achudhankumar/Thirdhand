@@ -158,32 +158,53 @@ class PlatformAuthManager:
 
     @staticmethod
     def identify_platform(query: str, user_region: str = "IN") -> dict[str, Any]:
-        """Detect platform from user text (e.g. 'Blinkit-la paal podu', 'Amazon shoes')."""
+        """Detect platform from user text (e.g. 'Blinkit-la paal podu', 'சொமேட்டோல பிரியாணி')."""
         q = query.casefold()
+
+        # 1. Tamil Script & Phonetic Platform Match
+        if any(w in q for w in ("சொமேட்டோ", "ஜொமேட்டோ", "சொமாட்டோ", "zomato")):
+            return {"platform_id": "zomato", **PLATFORM_CATALOG["zomato"]}
+        if any(w in q for w in ("ஸ்விக்கி", "ஸ்விகி", "swiggy", "இன்ஸ்டாமார்ட்", "instamart")):
+            is_insta = any(w in q for w in ("இன்ஸ்டா", "insta", "மளிகை", "பால்", "grocery", "bread"))
+            pid = "swiggy_instamart" if is_insta else "zomato"
+            return {"platform_id": pid, **PLATFORM_CATALOG.get(pid, PLATFORM_CATALOG["zomato"])}
+        if any(w in q for w in ("பிளிங்கிட்", "ப்ளிங்கிட்", "பிளின்கிட்", "blinkit")):
+            return {"platform_id": "blinkit", **PLATFORM_CATALOG["blinkit"]}
+        if any(w in q for w in ("செப்டோ", "ஜெப்டோ", "zepto")):
+            return {"platform_id": "zepto", **PLATFORM_CATALOG["zepto"]}
+        if any(w in q for w in ("அமேசான்", "அமேஸான்", "amazon")):
+            return {"platform_id": "amazon", **PLATFORM_CATALOG["amazon"]}
+        if any(w in q for w in ("பிளிப்கார்ட்", "ப்ளிப்கார்ட்", "flipkart")):
+            return {"platform_id": "flipkart", **PLATFORM_CATALOG["flipkart"]}
+        if any(w in q for w in ("மிந்த்ரா", "மின்ட்ரா", "myntra")):
+            return {"platform_id": "myntra", **PLATFORM_CATALOG["myntra"]}
+        if any(w in q for w in ("மீஷோ", "meesho")):
+            return {"platform_id": "meesho", **PLATFORM_CATALOG["meesho"]}
+
         for key, meta in PLATFORM_CATALOG.items():
             if key in q or meta["name"].casefold() in q:
                 return {"platform_id": key, **meta}
 
-        # Contextual inference by intent keywords
-        if any(w in q for w in ("blinkit", "groceries", "milk", "paal", "bread", "10 min")):
+        # 2. Contextual inference by intent keywords (Tamil & English)
+        if any(w in q for w in ("பிரியாணி", "சிக்கன்", "மட்டன்", "சாப்பாடு", "ஹோட்டல் உணவு", "biryani", "chicken", "mutton", "fried rice", "shawarma", "parotta", "restaurant food", "food delivery")):
+            return {"platform_id": "zomato", **PLATFORM_CATALOG["zomato"]}
+        if any(w in q for w in ("பால்", "பிரெட்", "முட்டை", "தயிர்", "மளிகை", "blinkit", "groceries", "milk", "paal", "bread", "10 min")):
             return {"platform_id": "blinkit", **PLATFORM_CATALOG["blinkit"]}
         if any(w in q for w in ("zepto", "quick commerce")):
             return {"platform_id": "zepto", **PLATFORM_CATALOG["zepto"]}
         if any(w in q for w in ("swiggy", "instamart")):
             return {"platform_id": "swiggy_instamart", **PLATFORM_CATALOG["swiggy_instamart"]}
-        if any(w in q for w in ("zomato", "restaurant food", "mess", "biryani", "food delivery")):
-            return {"platform_id": "zomato", **PLATFORM_CATALOG["zomato"]}
         if any(w in q for w in ("flipkart", "big billion")):
             return {"platform_id": "flipkart", **PLATFORM_CATALOG["flipkart"]}
-        if any(w in q for w in ("myntra", "clothes", "shirt", "tshirt", "dress", "fashion")):
+        if any(w in q for w in ("myntra", "clothes", "shirt", "tshirt", "dress", "fashion", "ஆடை")):
             return {"platform_id": "myntra", **PLATFORM_CATALOG["myntra"]}
-        if any(w in q for w in ("meesho", "saree")):
+        if any(w in q for w in ("meesho", "saree", "புடவை")):
             return {"platform_id": "meesho", **PLATFORM_CATALOG["meesho"]}
-        if any(w in q for w in ("ticket", "movie", "theatre", "cinema", "padam")):
+        if any(w in q for w in ("ticket", "movie", "theatre", "cinema", "padam", "டிக்கெட்", "படம்", "சினிமா")):
             if user_region == "CA":
                 return {"platform_id": "cineplex", **PLATFORM_CATALOG["cineplex"]}
             return {"platform_id": "bookmyshow", **PLATFORM_CATALOG["bookmyshow"]}
-        if any(w in q for w in ("amazon", "buy", "order", "price check")):
+        if any(w in q for w in ("amazon", "buy", "order", "price check", "வாங்கு", "விலை")):
             return {"platform_id": "amazon", **PLATFORM_CATALOG["amazon"]}
 
         # Default fallback to Amazon for general shopping, Blinkit for quick items

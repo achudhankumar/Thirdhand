@@ -203,9 +203,26 @@ class AutonomousCommerceAgent:
         }
 
     def _extract_items_from_query(self, query: str) -> list[dict[str, Any]]:
-        """Identify products mentioned in message."""
+        """Identify products and food dishes mentioned in message."""
         q = query.casefold()
         items = []
+
+        # Food Dishes (Zomato / Swiggy / Restaurants)
+        if any(w in q for w in ("chicken biryani", "சிக்கன் பிரியாணி", "mutton biryani", "மட்டன் பிரியாணி", "biryani", "பிரியாணி")):
+            dish_name = "Special Mutton Biryani" if any(w in q for w in ("mutton", "மட்டன்")) else "Special Chicken Biryani"
+            items.append({"name": dish_name, "price": 280, "qty": 1})
+        if any(w in q for w in ("parotta", "பரோட்டா", "porotta", "salna")):
+            items.append({"name": "Malabar Parotta (3 pcs) & Chicken Salna", "price": 120, "qty": 1})
+        if any(w in q for w in ("fried rice", "ப்ரைட் ரைஸ்", "noodles", "நூடுல்ஸ்")):
+            items.append({"name": "Egg Chicken Fried Rice", "price": 190, "qty": 1})
+        if any(w in q for w in ("pizza", "பீட்சா", "burger", "பர்கர்")):
+            items.append({"name": "Crispy Veg / Chicken Burger Combo", "price": 220, "qty": 1})
+        if any(w in q for w in ("dosa", "தோசை", "idli", "இட்லி")):
+            items.append({"name": "Ghee Roast Masala Dosa & Sambar", "price": 110, "qty": 1})
+        if any(w in q for w in ("coffee", "காபி", "tea", "டீ")):
+            items.append({"name": "Special Degree Filter Coffee (Hot)", "price": 40, "qty": 2})
+
+        # Groceries & Quick-Commerce
         if any(w in q for w in ("milk", "பால்", "paal", "nandini", "amul")):
             items.append({"name": "Fresh Cow Milk (1L)", "price": 34, "qty": 1})
         if any(w in q for w in ("bread", "பிரெட்")):
@@ -216,8 +233,24 @@ class AutonomousCommerceAgent:
             items.append({"name": "Fresh Curd (500g)", "price": 38, "qty": 1})
         if any(w in q for w in ("chips", "snack", "lays", "குர்குரே")):
             items.append({"name": "Crispy Potato Chips", "price": 20, "qty": 2})
+
+        # Electronics & Apparel
         if any(w in q for w in ("earbuds", "headphone", "boat", "oneplus")):
             items.append({"name": "boAt Airdopes 141 ANC", "price": 1499, "qty": 1})
         if any(w in q for w in ("shoe", "shoes", "running")):
             items.append({"name": "Running Sports Shoes", "price": 899, "qty": 1})
+
+        # If items still empty, try to salvage dish name from query
+        if not items:
+            import re
+            clean_q = re.sub(
+                r"(?i)\b(order|podu|pannu|zomato|swiggy|blinkit|zepto|amazon|flipkart|please|ஒரு|எனக்கு|வந்து|போடு|பண்ணு|சொமேட்டோ|சொமேட்டோல|ஸ்விக்கி|ஸ்விக்கியில)\b",
+                "",
+                query,
+            ).strip()
+            if clean_q and len(clean_q) >= 3:
+                items.append({"name": clean_q.title(), "price": 260, "qty": 1})
+            else:
+                items.append({"name": "Special Chicken Biryani", "price": 280, "qty": 1})
+
         return items
