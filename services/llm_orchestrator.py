@@ -1357,11 +1357,17 @@ class LLMOrchestrator:
         if is_commerce_request and not command.startswith(("movie_", "auth_")):
             comm_agent = AutonomousCommerceAgent()
             user_iso = session.profile.get("global_location", {}).get("country_code", "IN")
+            user_pin = session.profile.get("pincode") or ""
+            user_city = session.profile.get("place") or ""
+            user_loc = session.profile.get("locality") or ""
             commerce_res = await comm_agent.process_order_request(
                 user_id=user_id,
                 query=text,
                 user_region=user_iso,
                 user_lang=user_lang,
+                user_pincode=user_pin,
+                user_city=user_city,
+                user_locality=user_loc,
             )
             await self.memory.append_message(user_id, "user", text)
             await self.memory.append_message(user_id, "assistant", commerce_res["reply"])
