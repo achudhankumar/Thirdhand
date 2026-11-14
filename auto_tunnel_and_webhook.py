@@ -101,7 +101,7 @@ def run_tunnel_loop():
             for line in current_proc.stdout:
                 sys.stdout.write(line)
                 sys.stdout.flush()
-                match = re.search(r"https://([a-z0-9]+\.lhr\.life)", line)
+                match = re.search(r"https://([a-zA-Z0-9\-\.]+\.lhr\.life)", line)
                 if match:
                     tunnel_url = f"https://{match.group(1)}"
                     if tunnel_url != last_synced_url:
