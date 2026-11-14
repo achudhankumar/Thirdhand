@@ -1,6 +1,15 @@
 """Public configuration types for the required Pydantic 2 runtime."""
 
-from pydantic import (
+import os
+
+for _env_key in ("NO_PROXY", "no_proxy"):
+    _val = os.environ.get(_env_key, "")
+    if "[::1]" in _val:
+        os.environ[_env_key] = ",".join(
+            part for part in _val.split(",") if part.strip() != "[::1]"
+        )
+
+from pydantic import (  # noqa: E402
     BaseModel,
     ConfigDict,
     Field,
@@ -11,7 +20,7 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, SettingsConfigDict  # noqa: E402
 
 __all__ = [
     "BaseModel",
