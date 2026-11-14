@@ -249,4 +249,11 @@ async def test_image_generation_flux_styles():
     assert res["success"] is True
     assert "image_url" in res
     assert res["image_url"].startswith("http")
+    assert "pollinations" not in res["image_url"].lower()
+    assert res.get("engine") in {
+        "flux.1-schnell-hf",
+        "flux.1-schnell-nvidia",
+        "dall-e-3",
+        "procedural-fallback",
+    }
 

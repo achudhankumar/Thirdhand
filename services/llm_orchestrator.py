@@ -705,7 +705,7 @@ class LLMOrchestrator:
         if name == "generate_visual_diagram":
             from services.tools.diagram_tool import VisualDiagramTool
 
-            tool = VisualDiagramTool(getattr(self.local, "client", None))
+            tool = VisualDiagramTool(getattr(self.local, "client", None), settings=self.settings)
             res = await tool.generate_diagram(**args)
             if getattr(self, "whatsapp", None) and hasattr(self.whatsapp, "send_image"):
                 try:
@@ -720,7 +720,7 @@ class LLMOrchestrator:
         if name == "generate_ai_image":
             from services.tools.diagram_tool import VisualDiagramTool
 
-            tool = VisualDiagramTool(getattr(self.local, "client", None))
+            tool = VisualDiagramTool(getattr(self.local, "client", None), settings=self.settings)
             res = await tool.generate_ai_art_image(**args)
             if getattr(self, "whatsapp", None) and hasattr(self.whatsapp, "send_image"):
                 try:
@@ -732,6 +732,22 @@ class LLMOrchestrator:
                 except Exception:
                     pass
             return res
+        if name == "manage_cart":
+            from services.tools.cart_automation import UniversalCartManager
+
+            mgr = UniversalCartManager(self.settings)
+            action = args.get("action", "clear_and_add")
+            platform = args.get("platform", "zepto")
+            if action == "clear":
+                return mgr.clear_cart(user_id, platform)
+            elif action == "view":
+                return mgr.get_cart(user_id, platform)
+            return await mgr.add_to_cart(
+                user_id=user_id,
+                platform=platform,
+                text=args.get("items_text", ""),
+                clear_first=action in {"clear_and_add", "clear"},
+            )
         target = self.shopping if name == "compare_ecommerce_products" else self.transit
         return await getattr(target, name)(**args)
 
@@ -1755,7 +1771,7 @@ class LLMOrchestrator:
         if img_prompt:
             from services.tools.diagram_tool import VisualDiagramTool
 
-            tool = VisualDiagramTool(getattr(self.local, "client", None))
+            tool = VisualDiagramTool(getattr(self.local, "client", None), settings=self.settings)
             res = await tool.generate_ai_art_image(img_prompt)
             import re
             user_lang = str(session.profile.get("language") or "english").lower()

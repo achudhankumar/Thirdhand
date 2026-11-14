@@ -5,7 +5,6 @@ from __future__ import annotations
 import re
 import urllib.parse
 from datetime import datetime, timedelta
-from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -782,15 +781,9 @@ def _render_step_6_checkout_pass(
     city = str(profile.get("place") or "Trichy")
     
     # Read live public base URL
-    base_url = "https://35374a9ef8f4ff.lhr.life"
-    url_file = Path("data/whatsapp/public_url.txt")
-    if url_file.exists():
-        try:
-            val = url_file.read_text(encoding="utf-8").strip()
-            if val.startswith("http"):
-                base_url = val
-        except Exception:
-            pass
+    from services.tools.diagram_tool import get_public_base_url
+
+    base_url = get_public_base_url()
 
     movie_name = wizard.get("movie", "Scene (Tamil • U/A)")
     theatre_name = wizard.get("theatre", "Cinema")
