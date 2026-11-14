@@ -21,6 +21,39 @@ CA_FSA_REGEX = re.compile(
 )
 
 PINCODE_DIRECTORY: dict[str, dict[str, Any]] = {
+    "621209": {
+        "pincode": "621209",
+        "locality": "Valikandapuram & Perambalur",
+        "place": "Perambalur",
+        "district": "Perambalur",
+        "state": "Tamil Nadu",
+        "country": "India",
+        "country_iso": "IN",
+        "timezone": "Asia/Kolkata",
+        "currency": "INR",
+        "hub_name": "Perambalur & Valikandapuram",
+        "surrounding_areas": [
+            "Valikandapuram",
+            "Perambalur",
+            "Veppanthattai",
+            "Alathur",
+            "Padalur",
+            "Siruvachur",
+        ],
+        "latitude": 11.2333,
+        "longitude": 78.8833,
+        "station_code": "TPJ",
+        "airport_code": "TRZ",
+        "local_theatres": [
+            "Sri Venkateswara Theatre, Perambalur",
+            "Vetri Theatre, Perambalur",
+        ],
+        "popular_restaurants": [
+            "Hotel Tamil Nadu, Perambalur",
+            "Aasife Biryani, Perambalur NH",
+        ],
+        "verified": True,
+    },
     "620001": {
         "pincode": "620001",
         "locality": "Cantonment & Junction",
