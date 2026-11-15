@@ -19,16 +19,24 @@ DIAGRAM_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def get_public_base_url() -> str:
-    """Return active public tunnel URL or fallback."""
+    """Return active public tunnel URL or permanent cloud base URL."""
+    import os
+    env_url = (
+        os.getenv("PUBLIC_BASE_URL")
+        or os.getenv("RENDER_EXTERNAL_URL")
+        or os.getenv("WEBHOOK_URL")
+    )
+    if env_url and env_url.strip().startswith("http"):
+        return env_url.strip().rstrip("/")
     url_file = Path("data/whatsapp/public_url.txt")
     if url_file.exists():
         try:
             val = url_file.read_text(encoding="utf-8").strip()
             if val.startswith("http"):
-                return val
+                return val.rstrip("/")
         except Exception:
             pass
-    return "https://35374a9ef8f4ff.lhr.life"
+    return "https://thirdhand-ai-agent.onrender.com"
 
 
 class VisualDiagramTool:

@@ -22,3 +22,5 @@ services:
         value: gemini-3.5-flash-lite
       - key: USE_LOCAL_MEMORY_FALLBACK
         value: "true"
+      - key: PUBLIC_BASE_URL
+        value: https://thirdhand-ai-agent.onrender.com
