@@ -419,7 +419,7 @@ def extract_image_prompt_request(text: str) -> str | None:
             target = m.group(1).strip(" .?!,")
             if (
                 target
-                and target not in {"of", "for", "the", "a", "an", "ai"}
+                and target not in {"of", "for", "the", "a", "an", "ai", "another", "create another", "one more", "different", "another one", "new", "new one"}
                 and len(target) >= 2
             ):
                 for tk, en in tamil_to_en.items():
@@ -1773,8 +1773,30 @@ class LLMOrchestrator:
                 "profile": session.profile,
             }
 
+        is_another_request = text.strip().lower() in {
+            "create another image", "another image", "create another", "one more image", "another one"
+        }
         img_prompt = extract_image_prompt_request(text)
+        if is_another_request:
+            last_prompt = session.profile.get("last_image_prompt")
+            if last_prompt:
+                img_prompt = f"{last_prompt}, alternative artistic perspective"
+            else:
+                user_lang = str(session.profile.get("language") or "english").lower()
+                prompt_msg = (
+                    "🎨 *எந்த மாதிரி படம் உருவாக்க வேண்டும் ப்ரோ?*\n(எ.கா: _ரோபோடிக் ஆர்ம் ப்ளூபிரிண்ட்_, _நிலா_, _ஸ்போர்ட்ஸ் கார்_)"
+                    if user_lang in {"tamil", "tanglish"}
+                    else "🎨 *What image would you like me to create?*\n(e.g., _6DOF robotic arm blueprint_, _luminous moon_, _sports car_)"
+                )
+                return {
+                    "reply": prompt_msg,
+                    "buttons": [],
+                    "profile": session.profile,
+                }
+
         if img_prompt:
+            session.profile["last_image_prompt"] = img_prompt
+            await self.memory.update_profile(user_id, session.profile)
             from services.tools.diagram_tool import VisualDiagramTool
 
             tool = VisualDiagramTool(getattr(self.local, "client", None), settings=self.settings)
