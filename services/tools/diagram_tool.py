@@ -147,6 +147,47 @@ class VisualDiagramTool:
             "image_url": image_url,
         }
 
+    async def synthesize_cinematic_prompt(self, clean_prompt: str, detected_style: str) -> str:
+        """Autonomously expands user prompt into a DALL-E 3 / Midjourney v6 tier cinematic master prompt via Gemini."""
+        gemini_secret = getattr(self.settings, "gemini_api_key", None)
+        gemini_key = (
+            gemini_secret.get_secret_value().strip()
+            if gemini_secret and hasattr(gemini_secret, "get_secret_value")
+            else str(gemini_secret or "").strip()
+        )
+        if not gemini_key or gemini_key.startswith("test"):
+            return f"Award-winning 8k masterpiece photograph of {clean_prompt}, razor-sharp intricate details, cinematic soft studio lighting, professional 85mm f/1.4 lens depth of field, stunning clarity"
+
+        style_instruction = f"Target style: {detected_style}." if detected_style != "photorealistic" else "Target style: Photorealistic 8K cinematic photograph."
+        sys_prompt = (
+            "You are an expert AI visual art director for DALL-E 3 and Midjourney v6. "
+            f"{style_instruction} "
+            "Transform the user's brief into an ultra-high-definition masterpiece image generation prompt. "
+            "Detail subject anatomy, rich micro-textures, volumetric cinematic lighting, color palette, camera lens (85mm f/1.2), and depth of field. "
+            "Return ONLY the raw prompt paragraph in English without quotes or commentary."
+        )
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key={gemini_key}"
+        try:
+            async with httpx.AsyncClient(timeout=4.0) as http:
+                resp = await http.post(
+                    url,
+                    json={"contents": [{"parts": [{"text": f"{sys_prompt}\n\nUser brief: {clean_prompt}"}]}]},
+                )
+                if resp.status_code == 200:
+                    candidates = resp.json().get("candidates") or []
+                    if candidates:
+                        parts = (candidates[0].get("content") or {}).get("parts") or []
+                        synth = "".join(p.get("text", "") for p in parts).strip()
+                        if len(synth) > 20:
+                            return synth[:800]
+        except Exception as exc:
+            logger.debug("Gemini prompt expansion skipped: %s", exc)
+
+        return (
+            f"Award-winning 8k masterpiece photograph of {clean_prompt}, razor-sharp intricate details and realistic texture, "
+            f"cinematic natural soft studio lighting, professional 85mm f/1.4 lens depth of field, stunning clarity"
+        )
+
     async def generate_ai_art_image(
         self,
         prompt: str,
@@ -201,24 +242,8 @@ class VisualDiagramTool:
         elif any(k in clean_lower for k in ("watercolor", "oil painting", "canvas")):
             detected_style = "watercolor"
 
-        # Style prompt enhancement
-        if detected_style == "anime":
-            enhanced_prompt = f"Studio Ghibli and Makoto Shinkai aesthetic anime artwork of {clean_prompt}, vibrant atmospheric lighting, 4k masterwork"
-        elif detected_style == "3d_render":
-            enhanced_prompt = f"Ultra-detailed 3D Pixar style character render of {clean_prompt}, smooth volumetric lighting, octane ray-traced, cute polished aesthetic"
-        elif detected_style == "wallpaper":
-            enhanced_prompt = f"Stunning AMOLED mobile phone vertical wallpaper of {clean_prompt}, deep rich blacks, vibrant glowing colors, 8k crisp details"
-        elif detected_style == "cyberpunk":
-            enhanced_prompt = f"Futuristic cyberpunk concept art of {clean_prompt}, neon reflections, rain, dramatic cinematic volumetric fog, 8k resolution"
-        elif detected_style == "watercolor":
-            enhanced_prompt = f"Expressive dreamy watercolor and ink illustration of {clean_prompt}, soft fluid paint drips, delicate paper texture"
-        elif detected_style == "fantasy":
-            enhanced_prompt = f"Epic fantasy digital masterpiece of {clean_prompt}, magical glowing particles, ethereal atmosphere, highly detailed"
-        else:
-            enhanced_prompt = (
-                f"Award-winning 8k masterpiece photograph of {clean_prompt}, razor-sharp intricate details and realistic texture, "
-                f"cinematic natural soft studio lighting, professional 85mm f/1.4 lens depth of field, stunning clarity"
-            )
+        # Autonomous DALL-E 3 Style Prompt Expansion via Gemini
+        enhanced_prompt = await self.synthesize_cinematic_prompt(clean_prompt, detected_style)
 
         slug = "".join(c if c.isalnum() else "_" for c in clean_prompt.lower())[:25]
         filename = f"{int(time.time())}_{slug}.jpg"
