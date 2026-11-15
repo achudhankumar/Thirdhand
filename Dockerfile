@@ -2,10 +2,11 @@ FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 WORKDIR /app
 ARG INSTALL_TEST_DEPS=false
+ARG INSTALL_PLAYWRIGHT=false
 COPY requirements.txt requirements-dev.txt constraints.txt ./
 RUN if [ "$INSTALL_TEST_DEPS" = "true" ]; then pip install --no-cache-dir -r requirements-dev.txt; else pip install --no-cache-dir -r requirements.txt; fi \
     && apt-get update && apt-get install -y --no-install-recommends ffmpeg \
-    && python -m playwright install --with-deps --no-shell chromium \
+    && if [ "$INSTALL_PLAYWRIGHT" = "true" ]; then python -m playwright install --with-deps --no-shell chromium; fi \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 10001 thirdhand \
     && mkdir -p /app/data && chown thirdhand:thirdhand /app/data
