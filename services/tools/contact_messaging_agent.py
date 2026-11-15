@@ -15,23 +15,53 @@ class ContactMessagingAgent:
     - Saves recipient contact numbers automatically in user profile
     """
 
-    CALL_TRIGGERS = {
-        "call", "phone", "ring", "கால் பண்ணு", "கால் போடு", "கூப்பிடு",
-        "பேசு", "போன் போடு", "போன் பண்ணு",
-    }
-    
-    MSG_TRIGGERS = {
-        "message", "msg", "whatsapp", "send message", "மெசேஜ் அனுப்பு",
-        "மெசேஜ் போடு", "வாட்ஸ்அப் பண்ணு", "மெசேஜ்", "அனுப்பு",
+    CALL_WORDS = {"call", "phone", "ring"}
+    TAMIL_CALL_PATTERNS = [
+        r"கால்\s*(?:பண்ணு|போடு|பண்ணிடு)",
+        r"போன்\s*(?:போடு|பண்ணு|பண்ணிடு)",
+        r"கூப்பிடு",
+        r"பேசு",
+    ]
+    MSG_WORDS = {"message", "msg", "whatsapp"}
+    TAMIL_MSG_PATTERNS = [
+        r"மெசேஜ்\s*(?:அனுப்பு|போடு|பண்ணு|பண்ணிடு)",
+        r"வாட்ஸ்அப்\s*(?:பண்ணு|அனுப்பு)",
+    ]
+
+    NON_CONTACT_WORDS = {
+        "a", "the", "an", "pdf", "book", "image", "photo", "pic", "picture", "file",
+        "doc", "document", "song", "video", "food", "hotel", "order", "delivery",
+        "biryani", "pizza", "burger", "menu", "help", "summary", "details", "coloring", "for", "to"
     }
 
     @classmethod
     def is_contact_intent(cls, query: str) -> bool:
-        q = query.casefold()
-        has_action = any(t in q for t in cls.CALL_TRIGGERS | cls.MSG_TRIGGERS)
-        has_target = any(w in q for w in ("to", "for", "iku", "ku", "க்கு", "பிரகதீஷ்", "தம்பி", "pragadeesh", "brother", "friend"))
-        # Also direct mentions
-        return has_action and (has_target or len(q.split()) <= 4)
+        q = query.casefold().strip()
+
+        # 1. Action words with word boundary (avoid matching "coloring", "engineering", etc.)
+        has_call = any(re.search(rf"\b{w}\b", q) for w in cls.CALL_WORDS) or \
+                   any(re.search(p, q) for p in cls.TAMIL_CALL_PATTERNS)
+
+        has_msg = any(re.search(rf"\b{w}\b", q) for w in cls.MSG_WORDS) or \
+                  any(re.search(p, q) for p in cls.TAMIL_MSG_PATTERNS)
+
+        if not (has_call or has_msg):
+            return False
+
+        # 2. Check for explicit recipient / target
+        has_target = bool(re.search(r"\b(?:pragadeesh|brother|friend|sister|mom|dad|பிரகதீஷ்|தம்பி|நண்பன்|அம்மா|அப்பா)\b", q)) or \
+                     bool(re.search(r"\b(?:(?:\+?91)?[6-9]\d{9})\b", q))
+
+        target_match = re.search(r"(?:to|call|message|msg|contact|அனுப்பு|பண்ணு)\s+([a-zA-Z\u0B80-\u0BFF]{2,})", query, re.I)
+        if target_match:
+            cand = target_match.group(1).casefold()
+            if cand not in cls.NON_CONTACT_WORDS:
+                has_target = True
+
+        if re.search(r"[a-zA-Z\u0B80-\u0BFF]+(?:க்கு|ku|iku)\s*(?:கால்|போன்|மெசேஜ்|call|msg)", q):
+            has_target = True
+
+        return (has_call or has_msg) and has_target
 
     @classmethod
     async def process_contact_request(
@@ -46,24 +76,32 @@ class ContactMessagingAgent:
         q = query.casefold()
 
         # 1. Determine action: call vs message
-        is_call = any(t in q for t in cls.CALL_TRIGGERS) and not any(t in q for t in cls.MSG_TRIGGERS)
-        
-        # 2. Extract target name
-        target_name = "Pragadeesh"  # Default if user mentions pragadeesh or generic
-        if "பிரகதீஷ்" in query or "pragadeesh" in q:
-            target_name = "Pragadeesh"
-        else:
-            match = re.search(r"(?:to|call|message|msg|contact|அனுப்பு|பண்ணு)\s+([a-zA-Z\u0B80-\u0BFF]+)", query, re.I)
-            if match:
-                extracted = match.group(1).strip()
-                if extracted.casefold() not in {"a", "the", "one", "oru", "oruvan", "ஒரு"}:
-                    target_name = extracted.title()
+        is_call = (
+            any(re.search(rf"\b{w}\b", q) for w in cls.CALL_WORDS) or
+            any(re.search(p, q) for p in cls.TAMIL_CALL_PATTERNS)
+        ) and not (
+            any(re.search(rf"\b{w}\b", q) for w in cls.MSG_WORDS) or
+            any(re.search(p, q) for p in cls.TAMIL_MSG_PATTERNS)
+        )
 
-        # 3. Check if phone number is provided in text
+        # 2. Check if phone number is provided in text
         phone_match = re.search(r"\b(?:(?:\+?91)?[6-9]\d{9})\b", query)
         phone = phone_match.group(0).replace("+", "") if phone_match else None
         if phone and len(phone) == 10:
             phone = f"91{phone}"
+
+        # 3. Extract target name
+        target_name = "Pragadeesh" if ("பிரகதீஷ்" in query or "pragadeesh" in q) else None
+        if not target_name:
+            match = re.search(r"(?:to|call|message|msg|contact|அனுப்பு|பண்ணு)\s+([a-zA-Z\u0B80-\u0BFF]{2,})", query, re.I)
+            if match:
+                extracted = match.group(1).strip()
+                if extracted.casefold() not in cls.NON_CONTACT_WORDS and extracted.casefold() not in {"a", "the", "one", "oru", "oruvan", "ஒரு"}:
+                    target_name = extracted.title()
+        if not target_name and phone:
+            target_name = phone
+        if not target_name:
+            target_name = "Pragadeesh"
 
         # 4. If not in text, check saved contacts
         target_key = target_name.casefold()

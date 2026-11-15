@@ -1299,30 +1299,35 @@ class LLMOrchestrator:
         # Check pending contact action if user provided a phone number
         import re
         phone_match = re.search(r"\b(?:(?:\+?91)?[6-9]\d{9})\b", text)
-        if session.profile.get("pending_contact_action") and phone_match:
-            pending = session.profile.pop("pending_contact_action")
-            target_phone = phone_match.group(0).replace("+", "")
-            if len(target_phone) == 10:
-                target_phone = f"91{target_phone}"
-            if "contacts" not in session.profile:
-                session.profile["contacts"] = {}
-            session.profile["contacts"][pending["name"].casefold()] = target_phone
-            await self.memory.update_profile(user_id, session.profile)
-            
-            contact_res = await ContactMessagingAgent.process_contact_request(
-                user_id=user_id,
-                query=f"{pending['action']} to {pending['name']} {pending.get('msg_body', '')} {target_phone}",
-                session_profile=session.profile,
-                whatsapp_client=self.whatsapp,
-                user_lang=user_lang,
-            )
-            await self.memory.append_message(user_id, "user", text)
-            await self.memory.append_message(user_id, "assistant", contact_res["reply"][:4000])
-            return {
-                "reply": contact_res["reply"],
-                "buttons": contact_res.get("buttons", []),
-                "profile": session.profile,
-            }
+        if session.profile.get("pending_contact_action"):
+            if phone_match:
+                pending = session.profile.pop("pending_contact_action")
+                target_phone = phone_match.group(0).replace("+", "")
+                if len(target_phone) == 10:
+                    target_phone = f"91{target_phone}"
+                if "contacts" not in session.profile:
+                    session.profile["contacts"] = {}
+                session.profile["contacts"][pending["name"].casefold()] = target_phone
+                await self.memory.update_profile(user_id, session.profile)
+
+                contact_res = await ContactMessagingAgent.process_contact_request(
+                    user_id=user_id,
+                    query=f"{pending['action']} to {pending['name']} {pending.get('msg_body', '')} {target_phone}",
+                    session_profile=session.profile,
+                    whatsapp_client=self.whatsapp,
+                    user_lang=user_lang,
+                )
+                await self.memory.append_message(user_id, "user", text)
+                await self.memory.append_message(user_id, "assistant", contact_res["reply"][:4000])
+                return {
+                    "reply": contact_res["reply"],
+                    "buttons": contact_res.get("buttons", []),
+                    "profile": session.profile,
+                }
+            else:
+                # User replied with something else; clear pending contact prompt so it doesn't hijack turns
+                session.profile.pop("pending_contact_action", None)
+                await self.memory.update_profile(user_id, session.profile)
 
         # Check contact messaging / call intent
         if ContactMessagingAgent.is_contact_intent(text):
