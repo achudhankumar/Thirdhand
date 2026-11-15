@@ -1,0 +1,17 @@
+name: Render 24/7 Keep-Alive
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    if: ${{ vars.RENDER_PUBLIC_URL != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Thirdhand /health endpoint
+        run: |
+          URL="${{ vars.RENDER_PUBLIC_URL }}"
+          URL="${URL%/}"
+          curl -fsS --max-time 30 "${URL}/health"

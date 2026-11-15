@@ -211,9 +211,10 @@ class Settings(BaseSettings):
         if not (
             self.openai_api_key.get_secret_value().strip()
             or self.gemini_api_key.get_secret_value().strip()
+            or self.nvidia_api_key.get_secret_value().strip()
         ):
             raise ValueError(
-                "Required credential missing: openai_api_key or gemini_api_key"
+                "Required credential missing: openai_api_key, gemini_api_key, or nvidia_api_key"
             )
 
 
