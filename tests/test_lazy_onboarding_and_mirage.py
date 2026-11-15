@@ -64,3 +64,44 @@ async def test_mirage_card_and_flux_engine():
     assert res["success"] is True
     assert res["image_url"].startswith("http")
     assert res["file_size_bytes"] > 0
+
+@pytest.mark.asyncio
+async def test_create_image_variations_and_followup(settings, memory):
+    service = LLMOrchestrator(
+        settings,
+        memory,
+        None,
+        AsyncMock(),
+        BookingTool(settings, memory),
+        AsyncMock(),
+        AsyncMock(),
+        client=AsyncMock(),
+    )
+    user_id = "test_img_user_101"
+    await memory.update_profile(
+        user_id,
+        {"language": "english", "onboarding_step": "completed"},
+    )
+
+    # 1. Bare 'create_image' prompts for subject
+    res1 = await service.handle_interactive_turn(user_id, "create_image")
+    assert "What image would you like me to create" in res1["reply"]
+    session1 = await memory.get_session(user_id)
+    assert session1.profile.get("awaiting_image_prompt") is True
+
+    # 2. Providing subject on next turn generates image
+    res2 = await service.handle_interactive_turn(user_id, "futuristic neon sports car")
+    assert "image_url" in res2
+    assert res2["image_url"].startswith("http")
+    session2 = await memory.get_session(user_id)
+    assert session2.profile.get("awaiting_image_prompt") is False
+    assert "sports car" in session2.profile.get("last_image_prompt", "")
+
+    # 3. Direct 'create_image <subject>' works in single turn
+    res3 = await service.handle_interactive_turn(user_id, "create_image cute fluffy cat")
+    assert "image_url" in res3
+    assert res3["image_url"].startswith("http")
+
+    # 4. Button string 'Create a photorealistic AI image' prompts for subject
+    res4 = await service.handle_interactive_turn(user_id, "Create a photorealistic AI image")
+    assert "What image would you like me to create" in res4["reply"]

@@ -372,7 +372,7 @@ class VisualDiagramTool:
                 if flux_resp.status_code == 200 and len(flux_resp.content) > 1000:
                     image_bytes = flux_resp.content
                     filepath.write_bytes(image_bytes)
-                    image_url = f"{base_url}/media/{filename}"
+                    image_url = flux_url
                     engine = "flux.1-neural-inference"
                     logger.info("FLUX.1 Neural Inference generated %d bytes image", len(image_bytes))
             except Exception as exc:

@@ -372,31 +372,46 @@ def detect_user_input_mode(text: str, base_language: str) -> dict[str, str]:
 def extract_image_prompt_request(text: str) -> str | None:
     import re
 
-    cleaned = text.strip()
-    if len(cleaned) < 3:
+    cleaned = text.strip(" .,!?:;\n\r\t")
+    if len(cleaned) < 2:
         return None
     lower = cleaned.lower()
-    lower = re.sub(r"^[^\w]+|[^\w]+$", "", lower)
+    # Strip emojis
+    lower = re.sub(r"[\u2700-\u27BF\U0001f300-\U0001f64f\U0001f680-\U0001f6ff]", "", lower).strip(" .,!?:;\n\r\t")
+    # Normalize underscores and colons to spaces (e.g. create_image -> create image)
+    lower = re.sub(r"[_:]+", " ", lower).strip(" .,!?:;\n\r\t")
+
     if any(
         k in lower
         for k in (
-            "food",
             "restaurant",
-            "hotel",
-            "train",
-            "ticket",
-            "bill",
-            "pnr",
-            "bus",
-            "flight",
+            "train ticket",
+            "hotel booking",
+            "bus ticket",
+            "flight ticket",
+            "pnr status",
+            "food spot",
+            "food delivery",
         )
     ):
         return None
+
+    # Bare creation commands without explicit subject (e.g., 'create_image', 'create an image', '🎨 Create AI Image')
+    bare_patterns = [
+        r"^(?:create|generate|make|draw)\s+(?:an?|the)?\s*(?:ai\s+)?(?:image|photo|picture|pic|art|wallpaper|portrait)$",
+        r"^(?:ai\s+)?(?:image|photo|picture|pic)\s*(?:create|generate|make|draw|venum|kudu|pannu|panu)$",
+        r"^(?:create\s+)?(?:a\s+)?(?:photorealistic\s+)?(?:ai\s+)?image$",
+        r"^(?:ஒரு\s+)?(?:படம்|இமேஜ்)\s*(?:உருவாக்கு|வரை|ஜெனரேட்|கிரியேட்|வேண்டும்)?$",
+    ]
+    for bp in bare_patterns:
+        if re.match(bp, lower):
+            return "__ASK_SUBJECT__"
+
     patterns = [
-        r"^(?:create|generate|make|draw|show(?:\s+me)?)\s+(?:an?|the)?\s*(?:ai\s+)?(?:image|photo|picture|pic|drawing|art|wallpaper)\s+(?:of|about|for)?\s*(.+)$",
+        r"^(?:create|generate|make|draw|show(?:\s+me)?)\s+(?:an?|the)?\s*(?:ai\s+)?(?:image|photo|picture|pic|drawing|art|wallpaper)\s*(?:of|about|for|:)?\s*(.+)$",
+        r"^(?:create|generate|make|draw|show(?:\s+me)?)\s+(?:an?|the)?\s*(?:ai\s+)?(.+?)\s+(?:image|photo|picture|pic|drawing|art|wallpaper)$",
+        r"^(?:image|photo|picture|pic)\s*(?:of|for|:)?\s*(.+)$",
         r"^(.+?)\s+(?:image|photo|picture|pic|drawing)\s*(?:create|generate|draw|make|venum|kudu|pannu|panu|panni\s*kudu|podu|potu)$",
-        r"^(?:image|photo|picture|pic)\s+(?:of|for)\s*(.+)$",
-        r"^(.+?)\s+(?:image|photo|picture|pic)$",
         r"^(?:ஒரு\s+)?(.+?)\s*(?:படம்|இமேஜ்|போட்டோ)\s*(?:உருவாக்கு|வரை|ஜெனரேட்\s*பண்ணு|போடு|கிரியேட்\s*பண்ணி\s*குடு|பண்ணி\s*குடு|குடு|வேண்டும்)?$",
         r"^(?:ஒரு\s+)?(.+?)\s*(?:படம்|இமேஜ்)\s*(?:கிரியேட்|ஜெனரேட்)\s*(?:பண்ணி\s*குடு)?$",
         r"^(?:ഒരു\s+)?(.+?)\s*(?:ചിത്രം|ഫോട്ടോ|ഇമേജ്)\s*(?:ഉണ്ടാക്കൂ|വരയ്ക്കൂ|തരു|ചെയ്യൂ)$",
@@ -416,10 +431,10 @@ def extract_image_prompt_request(text: str) -> str | None:
     for pattern in patterns:
         m = re.match(pattern, lower)
         if m:
-            target = m.group(1).strip(" .?!,")
+            target = m.group(1).strip(" .,!?:;\n\r\t")
             if (
                 target
-                and target not in {"of", "for", "the", "a", "an", "ai", "another", "create another", "one more", "different", "another one", "new", "new one"}
+                and target not in {"of", "for", "the", "a", "an", "ai", "image", "photo", "picture", "pic", "another", "create another", "one more", "different", "another one", "new", "new one"}
                 and len(target) >= 2
             ):
                 for tk, en in tamil_to_en.items():
@@ -1775,16 +1790,27 @@ class LLMOrchestrator:
             "create another image", "another image", "create another", "one more image", "another one"
         }
         img_prompt = extract_image_prompt_request(text)
-        if is_another_request:
-            last_prompt = session.profile.get("last_image_prompt")
-            if last_prompt:
-                img_prompt = f"{last_prompt}, alternative artistic perspective"
+
+        # Check if user is replying with an image subject after being asked
+        if not img_prompt and session.profile.get("awaiting_image_prompt"):
+            clean_reply = text.strip(" .,!?:;\n\r\t")
+            if clean_reply.lower() not in {"cancel", "stop", "help", "start", "hi", "hello"}:
+                img_prompt = clean_reply
+                session.profile["awaiting_image_prompt"] = False
+
+        if is_another_request or img_prompt == "__ASK_SUBJECT__":
+            if is_another_request and session.profile.get("last_image_prompt"):
+                img_prompt = f"{session.profile.get('last_image_prompt')}, alternative artistic perspective"
             else:
                 user_lang = str(session.profile.get("language") or "english").lower()
+                session.profile["awaiting_image_prompt"] = True
+                await self.memory.update_profile(user_id, session.profile)
                 prompt_msg = (
-                    "🎨 *எந்த மாதிரி படம் உருவாக்க வேண்டும் ப்ரோ?*\n(எ.கா: _ரோபோடிக் ஆர்ம் ப்ளூபிரிண்ட்_, _நிலா_, _ஸ்போர்ட்ஸ் கார்_)"
+                    "🎨 *எந்த மாதிரி படம் உருவாக்க வேண்டும் ப்ரோ?*\n━━━━━━━━━━━━━━━━━━━━\n"
+                    "உங்களுக்கு என்ன படம் வேண்டும் என்று சொல்லுங்கள் (எ.கா: _'நிலா'_, _'cute cat'_, _'சூப்பர் கார்'_, _'ரோபோ'_), உடனே 4K தரத்தில் உருவாக்கி தருகிறேன்! ✨"
                     if user_lang in {"tamil", "tanglish"}
-                    else "🎨 *What image would you like me to create?*\n(e.g., _6DOF robotic arm blueprint_, _luminous moon_, _sports car_)"
+                    else "🎨 *What image would you like me to create?*\n━━━━━━━━━━━━━━━━━━━━\n"
+                    "Please describe the image you want (e.g., _'luminous full moon'_, _'cute fluffy cat'_, _'futuristic flying car'_), and I will generate it in crisp 4K for you! ✨"
                 )
                 return {
                     "reply": prompt_msg,
