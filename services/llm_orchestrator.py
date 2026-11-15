@@ -1800,6 +1800,33 @@ class LLMOrchestrator:
             from services.tools.diagram_tool import VisualDiagramTool
 
             tool = VisualDiagramTool(getattr(self.local, "client", None), settings=self.settings)
+
+            # Instant Mirage Progress Feedback: Notify WhatsApp immediately so user knows command is processing
+            if self.whatsapp and user_id.isdigit():
+                try:
+                    user_lang = str(session.profile.get("language") or "english").lower()
+                    if user_lang in {"tamil", "tanglish"}:
+                        interim_txt = (
+                            f"⏳ *AI படம் உருவாக்கப்படுகிறது...*\n"
+                            f"━━━━━━━━━━━━━━━━━━━━\n"
+                            f"🎨 *விளக்கம்:* _{img_prompt}_\n"
+                            f"⚙️ *இன்ஜின்:* FLUX.1 Neural Diffusion (4K)\n"
+                            f"📊 *முன்னேற்றம்:* [████████░░] 78% • கேன்வாஸ் தயாராகிறது...\n\n"
+                            f"_சில நொடிகளில் உங்கள் முழு தெளிவான 4K படம் வந்துவிடும்!_ ✨"
+                        )
+                    else:
+                        interim_txt = (
+                            f"⏳ *Generating your AI image...*\n"
+                            f"━━━━━━━━━━━━━━━━━━━━\n"
+                            f"🎨 *Concept:* _{img_prompt}_\n"
+                            f"⚙️ *Engine:* FLUX.1 Neural Diffusion (4K)\n"
+                            f"📊 *Progress:* [████████░░] 78% • Synthesizing canvas...\n\n"
+                            f"_Rendering high-definition latents. Full image arriving in a few seconds!_ ✨"
+                        )
+                    await self.whatsapp.send_text(user_id, interim_txt)
+                except Exception as interim_exc:
+                    logger.debug("Interim progressive feedback skipped: %s", interim_exc)
+
             res = await tool.generate_ai_art_image(img_prompt)
             import re
             user_lang = str(session.profile.get("language") or "english").lower()
@@ -1828,7 +1855,7 @@ class LLMOrchestrator:
                 ],
                 "profile": session.profile,
             }
-        if session.profile.get("pincode") and (
+        is_local_places_command = (
             command
             in {
                 "search a good food spot near me",
@@ -1862,7 +1889,20 @@ class LLMOrchestrator:
                     "ஹோட்டல்",
                 )
             )
-        ):
+        )
+        if is_local_places_command:
+            if not session.profile.get("pincode"):
+                from services import _prompt_pincode
+                session.profile["onboarding_step"] = "awaiting_pincode"
+                await self.memory.update_profile(user_id, session.profile)
+                lazy_pin = _prompt_pincode(user_lang)
+                await self.memory.append_message(user_id, "user", text)
+                await self.memory.append_message(user_id, "assistant", lazy_pin["text"][:4000])
+                return {
+                    "reply": lazy_pin["text"][:4000],
+                    "buttons": lazy_pin.get("buttons", []),
+                    "profile": session.profile,
+                }
             scoped = await generate_pincode_scoped_reply(
                 session, user_id, text, self.memory
             )

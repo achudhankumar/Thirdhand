@@ -841,6 +841,59 @@ def _prompt_language() -> dict[str, Any]:
     return {"text": body, "buttons": buttons, "stage": "onboarding_language"}
 
 
+def _welcome_greeting(lang: str) -> dict[str, Any]:
+    if lang in {"tamil", "tanglish"}:
+        body = (
+            "வணக்கம்! *Thirdhand AI* 🤝-க்கு வரவேற்கிறோம்!\n\n"
+            "நான் உங்கள் 24/7 தனிப்பட்ட வாட்ஸ்அப் சூப்பர்-ஏஜென்ட் (Autonomous AI Agent).\n\n"
+            "✨ *நான் உங்களுக்கு என்னென்ன உதவிகள் செய்யலாம்?*\n"
+            "• 🎨 4K AI படங்கள் & தொழில்நுட்ப டயகிராம்கள் உருவாக்குதல்\n"
+            "• 💡 சந்தேகங்கள், திட்டங்கள், கணக்குகள், மொழிபெயர்ப்பு & கோடிங்\n"
+            "• 🍽️ உணவு & மளிகைப் பொருட்கள் நேரடி ஆர்டர் (Zomato / Blinkit)\n"
+            "• 🎬 சினிமா டிக்கெட் & உள்ளூர் இடங்கள் கண்டறிதல்\n"
+            "• 🎙️ ஆடியோ வாய்ஸ் நோட்கள் & PDF சுருக்கம்\n\n"
+            "இப்போது உங்களுக்கு என்ன உதவி வேண்டும் என்று தாராளமாகக் கேளுங்கள்!"
+        )
+        buttons = [
+            {"id": "Create a photorealistic AI image", "title": "🎨 AI படம் வரை"},
+            {"id": "Search a good food spot near me", "title": "🍽️ உணவு இடங்கள்"},
+            {"id": "How does Thirdhand AI work?", "title": "💡 உதவி / வழிகாட்டி"},
+        ]
+    elif lang == "hindi":
+        body = (
+            "नमस्ते! *Thirdhand AI* 🤝 में आपका स्वागत है!\n\n"
+            "मैं आपका 24/7 पर्सनल व्हाट्सएप सुपर-एजेंट हूँ।\n\n"
+            "✨ *मैं आपके लिए क्या कर सकता हूँ?*\n"
+            "• 🎨 4K AI चित्र और तकनीकी चित्र बनाना\n"
+            "• 💡 सवाल-जवाब, कोडिंग और अनुवाद\n"
+            "• 🍽️ खाना और किराना ऑर्डर करना\n"
+            "• 🎙️ वॉइस नोट्स और PDF सारांश\n\n"
+            "आप क्या करना चाहते हैं, मुझे बताएं!"
+        )
+        buttons = [
+            {"id": "Create a photorealistic AI image", "title": "🎨 AI चित्र बनाएं"},
+            {"id": "Search a good food spot near me", "title": "🍽️ भोजन खोजें"},
+        ]
+    else:
+        body = (
+            "Welcome to *Thirdhand AI* 🤝\n\n"
+            "Your 24/7 autonomous WhatsApp Super-Agent.\n\n"
+            "✨ *Here is what I can do for you:* \n"
+            "• 🎨 High-res 4K AI imagery & architectural blueprints\n"
+            "• 💡 General queries, complex logic, coding & translations\n"
+            "• 🍽️ Food & grocery delivery (Zomato / Blinkit / Swiggy)\n"
+            "• 🎬 Cinema showtimes & transit scout\n"
+            "• 🎙️ Voice notes (STT) & document intelligence\n\n"
+            "How can I help you today? Ask me anything or select an option below:"
+        )
+        buttons = [
+            {"id": "Create a photorealistic AI image", "title": "🎨 Create AI Image"},
+            {"id": "Search a good food spot near me", "title": "🍽️ Food Spots"},
+            {"id": "How does Thirdhand AI work?", "title": "💡 Help & Guide"},
+        ]
+    return {"text": body, "buttons": buttons, "stage": "onboarding_completed"}
+
+
 def _prompt_pincode(lang: str) -> dict[str, Any]:
     if lang in {"tamil", "tanglish"}:
         body = (
@@ -973,14 +1026,14 @@ async def handle_onboarding_step(
             or bool(profile.get("pincode"))
         )
         profile["language"] = language
-        profile["onboarding_step"] = "completed" if has_location else "awaiting_pincode"
+        profile["onboarding_step"] = "completed"
         await memory.update_profile(user_id, profile)
         if has_location:
             return {
                 "text": "Language saved. Your confirmed location context is retained.",
                 "buttons": [],
             }
-        return _prompt_pincode(language)
+        return _welcome_greeting(language)
 
     if session.location is not None and profile.get("language"):
         profile["onboarding_step"] = "completed"
@@ -989,12 +1042,11 @@ async def handle_onboarding_step(
 
     lang = profile.get("language", "english")
 
-    # Step 2: Strict Pincode / Postal Code Lock
-    if profile.get("onboarding_step") in {None, "awaiting_pincode", "awaiting_place"}:
-        pin = extract_pincode(text)
-        if pin:
-            details = await resolve_pincode_details(pin)
-            if details:
+    # Step 2: Contextual / On-Demand Pincode resolution (only if awaiting or explicitly sent)
+    pin = extract_pincode(text)
+    if pin and (profile.get("onboarding_step") in {"awaiting_pincode", "awaiting_place"} or len(text.strip().split()) <= 3):
+        details = await resolve_pincode_details(pin)
+        if details:
                 profile.update(
                     pincode=details.get("pincode", pin),
                     place=details["place"],
@@ -1042,7 +1094,11 @@ async def handle_onboarding_step(
                     ],
                 }
 
-        # If user did not send a valid pincode, enforce strict gate by re-prompting pincode
+        # If user was explicitly prompted for pincode and sent invalid input, re-prompt pincode
+        if profile.get("onboarding_step") in {"awaiting_pincode", "awaiting_place"}:
+            return _prompt_pincode(lang)
+
+    if profile.get("onboarding_step") in {"awaiting_pincode", "awaiting_place"}:
         return _prompt_pincode(lang)
 
     return None

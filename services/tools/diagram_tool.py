@@ -355,7 +355,33 @@ class VisualDiagramTool:
                 if own_client and http is not None:
                     await http.aclose()
 
-        # Tier 4: Procedural Graphic Fallback (100% offline guaranteed)
+        # Tier 4: Direct FLUX.1 Neural Inference (Fast, Free, High-Fidelity & Safe)
+        if not image_bytes:
+            own_client = False
+            http = self.client
+            try:
+                if http is None:
+                    http = httpx.AsyncClient(timeout=35.0)
+                    own_client = True
+                safe_encoded = urllib.parse.quote(enhanced_prompt[:800])
+                flux_url = (
+                    f"https://image.pollinations.ai/prompt/{safe_encoded}"
+                    f"?model=flux&width={width}&height={height}&nologo=true&safe=true&seed={int(time.time())}"
+                )
+                flux_resp = await http.get(flux_url, timeout=35.0)
+                if flux_resp.status_code == 200 and len(flux_resp.content) > 1000:
+                    image_bytes = flux_resp.content
+                    filepath.write_bytes(image_bytes)
+                    image_url = f"{base_url}/media/{filename}"
+                    engine = "flux.1-neural-inference"
+                    logger.info("FLUX.1 Neural Inference generated %d bytes image", len(image_bytes))
+            except Exception as exc:
+                logger.warning("FLUX.1 Neural Inference skipped/failed: %s", exc)
+            finally:
+                if own_client and http is not None:
+                    await http.aclose()
+
+        # Tier 5: Procedural Graphic Fallback (100% offline guaranteed)
         if not image_bytes and not filepath.exists():
             try:
                 img = Image.new("RGB", (width, height), color=(20, 24, 39))
@@ -386,5 +412,73 @@ class VisualDiagramTool:
             "image_url": image_url,
             "file_path": str(filepath.resolve()) if filepath.exists() else None,
             "file_size_bytes": len(image_bytes),
+        }
+
+    @classmethod
+    def generate_mirage_card(
+        cls,
+        prompt: str,
+        percentage: int = 68,
+        width: int = 800,
+        height: int = 450,
+    ) -> dict[str, Any]:
+        """Creates an instant interactive glassmorphic mirage card preview with live progress bar."""
+        from PIL import Image, ImageDraw
+
+        img = Image.new("RGBA", (width, height), (15, 17, 26, 255))
+        draw = ImageDraw.Draw(img)
+
+        # Draw gradient glassmorphism
+        for y in range(height):
+            factor = y / height
+            r = int(18 + 25 * factor)
+            g = int(22 + 15 * factor)
+            b = int(38 + 45 * factor)
+            draw.line([(0, y), (width, y)], fill=(r, g, b, 255))
+
+        margin = 25
+        draw.rounded_rectangle(
+            [(margin, margin), (width - margin, height - margin)],
+            radius=24,
+            outline=(110, 86, 207, 180),
+            width=2,
+        )
+
+        inner_margin = margin + 15
+        draw.rounded_rectangle(
+            [(inner_margin, inner_margin), (width - inner_margin, height - inner_margin)],
+            radius=16,
+            fill=(25, 28, 48, 140),
+            outline=(70, 80, 140, 100),
+            width=1,
+        )
+
+        draw.text((inner_margin + 25, inner_margin + 30), "⚡ FLUX.1 NEURAL DIFFUSION ENGINE", fill=(160, 130, 255))
+        draw.text((inner_margin + 25, inner_margin + 58), "Synthesizing Canvas...", fill=(255, 255, 255))
+
+        short_prompt = prompt if len(prompt) <= 65 else prompt[:62] + "..."
+        draw.text((inner_margin + 25, inner_margin + 98), f'"{short_prompt}"', fill=(200, 210, 230))
+
+        bar_x = inner_margin + 25
+        bar_y = height - inner_margin - 80
+        bar_w = width - 2 * (inner_margin + 25)
+        bar_h = 16
+
+        draw.rounded_rectangle([(bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h)], radius=8, fill=(40, 45, 75))
+        filled_w = max(4, int(bar_w * (percentage / 100)))
+        draw.rounded_rectangle([(bar_x, bar_y), (bar_x + filled_w, bar_y + bar_h)], radius=8, fill=(130, 80, 255))
+
+        draw.text((bar_x, bar_y - 25), f"Progress: {percentage}% — Rendering high-frequency latents", fill=(180, 190, 220))
+        draw.text((inner_margin + 25, height - inner_margin - 35), "Thirdhand AI • Delivering full 4K output shortly...", fill=(120, 130, 160))
+
+        slug = "".join(c if c.isalnum() else "_" for c in prompt.lower())[:20]
+        filename = f"{int(time.time())}_mirage_{slug}.jpg"
+        filepath = DIAGRAM_CACHE_DIR / filename
+        img.convert("RGB").save(filepath, "JPEG", quality=90)
+        base_url = get_public_base_url()
+        return {
+            "image_url": f"{base_url}/media/{filename}",
+            "file_path": str(filepath.resolve()),
+            "percentage": percentage,
         }
 

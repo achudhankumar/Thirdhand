@@ -35,6 +35,31 @@ class AutonomousCommerceAgent:
         platform_name = platform.get("name", "Platform")
         icon = platform.get("icon", "🛒")
 
+        # Step 0: Lazy / Contextual Pincode Request if user location is unknown
+        if not user_pincode:
+            if user_lang in {"tamil", "tanglish"}:
+                pin_msg = (
+                    f"📍 *உங்கள் பகுதி பின்கோடு என்ன ப்ரோ?*\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"அருகிலுள்ள உணவகங்கள் & {platform_name} டெலிவரி சேவைகளைக் கண்டறிய உங்கள் 6-இலக்க பின்கோடு (எ.கா: `620018`, `621209`, `600028`) தேவை.\n\n"
+                    f"கீழே உள்ள ஏரியாவைத் தேர்ந்தெடுக்கலாம் அல்லது உங்கள் பின்கோடை அனுப்பலாம்:"
+                )
+            else:
+                pin_msg = (
+                    f"📍 *What is your area Pincode?*\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"To locate nearby restaurants & verified {platform_name} delivery partners, please enter your 6-digit Pincode (e.g. `620018`, `621209`, `600028`) or tap a location below:"
+                )
+            return {
+                "reply": pin_msg,
+                "buttons": [
+                    {"id": "620018", "title": "📍 Trichy (620018)"},
+                    {"id": "621209", "title": "📍 Perambalur (621209)"},
+                    {"id": "600028", "title": "📍 Chennai (600028)"},
+                ],
+                "platform": platform_id,
+            }
+
         # Step 1: Real-Time Location & Dark Store Serviceability Gate
         svc = ServiceabilityEngine.check_serviceability(
             platform_id=platform_id,

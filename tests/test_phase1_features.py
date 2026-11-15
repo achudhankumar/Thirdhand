@@ -496,10 +496,10 @@ async def test_global_pincode_onboarding_indian_and_international(
     # Step 0: Greeting prompts language
     step0 = await service.handle_interactive_turn(uid, "Hi")
     assert len(step0["buttons"]) == 3
-    # Step 1: Select language -> prompts global pincode
+    # Step 1: Select language -> Welcome greeting (lazy onboarding, no premature pincode gate)
     step1 = await service.handle_interactive_turn(uid, lang_input)
-    assert "Pincode" in step1["reply"] or "பின்கோடு" in step1["reply"]
-    # Strict gate: trying to ask for food before locking pincode re-prompts pincode
+    assert any(w in step1["reply"] for w in ("Thirdhand", "வணக்கம்", "Welcome", "नमस्ते"))
+    # Lazy gate: trying to search food before locking pincode prompts for pincode on-demand
     gated = await service.handle_interactive_turn(
         uid, "Search a good food spot near me"
     )

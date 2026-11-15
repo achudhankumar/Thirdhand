@@ -12,3 +12,4 @@ beautifulsoup4==4.15.0
 pypdf==6.21.4
 tzdata==2026.6
 pillow>=10.0.0
+reportlab>=5.0.0
