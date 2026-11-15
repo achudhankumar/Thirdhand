@@ -7,7 +7,9 @@ services:
     region: oregon
     envVars:
       - key: ENVIRONMENT
-        value: production
+        value: development
+      - key: SESSION_HASH_KEY
+        generateValue: true
       - key: META_ACCESS_TOKEN
         sync: false
       - key: META_PHONE_NUMBER_ID
@@ -15,7 +17,7 @@ services:
       - key: META_APP_SECRET
         sync: false
       - key: META_VERIFY_TOKEN
-        sync: false
+        value: thirdhand_webhook_token_2026
       - key: NVIDIA_API_KEY
         sync: false
       - key: HF_TOKEN
