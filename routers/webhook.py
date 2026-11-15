@@ -177,6 +177,8 @@ async def receive(request: Request):
                         not in {"sent", "delivered", "read", "failed"}
                     ):
                         raise ValueError("Invalid status")
+                    if status.get("status") == "failed":
+                        logger.error("META DELIVERY FAILED: id=%s recipient=%s errors=%s", status.get("id"), status.get("recipient_id"), status.get("errors"))
                     timestamp(status.get("timestamp"))
                     statuses.append(
                         {k: status[k] for k in ("id", "status", "timestamp")}
