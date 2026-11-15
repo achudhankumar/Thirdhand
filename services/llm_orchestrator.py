@@ -569,9 +569,9 @@ class LLMOrchestrator:
             )
             candidate_models = [
                 preferred_model,
-                "gemini-2.5-flash",
-                "gemini-2.0-flash",
-                "gemini-1.5-flash",
+                "gemini-3.5-flash-lite",
+                "gemini-flash-lite-latest",
+                "gemini-flash-latest",
             ]
             seen_models = set()
             models_to_try = [m for m in candidate_models if not (m in seen_models or seen_models.add(m))]
@@ -1032,12 +1032,10 @@ class LLMOrchestrator:
                     )
                 except Exception as exc:
                     logger.warning("WhatsApp send_image failed (%s)", exc)
-                    if not result.get("buttons"):
-                        await self.whatsapp.send_text(
-                            user_id,
-                            f"{result['reply']}\n\n🔗 Image Link: {result['image_url']}",
-                        )
-                        return
+                    await self.whatsapp.send_text(
+                        user_id,
+                        f"{result['reply']}\n\n🔗 Image Link: {result['image_url']}",
+                    )
             if result.get("buttons"):
                 await self._safe_send_buttons(
                     user_id, "👇 Choose your next action below:", result["buttons"][:3]
