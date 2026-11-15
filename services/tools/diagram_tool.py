@@ -9,6 +9,7 @@ import os
 import time
 from pathlib import Path
 from typing import Any
+import urllib.parse
 from urllib.parse import quote
 
 import httpx
